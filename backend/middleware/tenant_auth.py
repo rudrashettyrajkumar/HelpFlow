@@ -48,3 +48,25 @@ async def require_admin(authorization: str | None = Header(default=None)) -> Non
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid admin token"
         )
+
+
+async def require_admin_tenant(
+    authorization: str | None = Header(default=None),
+    x_tenant_id: str | None = Header(default=None),
+) -> str:
+    """Gate `/admin/sources*` (E2): admin bearer PLUS which tenant to act on.
+
+    DESIGN CHOICE (flagged, spec is silent on this): ARCHITECTURE §7.1 notes
+    `ADMIN_TOKEN` is "a simple bearer token per tenant" but E1 shipped one
+    shared demo token, not a per-tenant credential store. The smallest
+    reasonable extension is an `X-Tenant-Id` header, resolved server-side same
+    as `resolve_tenant`'s `X-Widget-Key` — the admin UI (E6) sets it from
+    whichever demo tenant the owner is managing. Revisit if E6/production adds
+    real per-tenant admin accounts.
+    """
+    await require_admin(authorization)
+    if not x_tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="missing X-Tenant-Id"
+        )
+    return x_tenant_id
