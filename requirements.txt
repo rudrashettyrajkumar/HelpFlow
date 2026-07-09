@@ -1,6 +1,6 @@
 # HelpFlow brain (FastAPI) runtime + tooling. Featherweight container stays the
 # rule — no torch, no sentence-transformers; chat/embedding models are external
-# APIs (ARCHITECTURE §2). Tokenizer/crawler deps arrive with E2.
+# APIs (ARCHITECTURE §2).
 fastapi==0.139.0
 uvicorn[standard]==0.51.0
 pydantic-settings==2.14.2
@@ -8,6 +8,11 @@ httpx==0.28.1
 litellm==1.91.1           # LiteLLM Router: OpenRouter→Groq failover + semaphore (§4)
 qdrant-client==1.18.0     # async vector client (§5.1)
 asyncpg==0.31.0           # Supabase Postgres: guarded UPDATEs + LISTEN/NOTIFY (§5.2/§3.3)
+
+# Ingestion (E2): chunk token-counting + website content extraction.
+tiktoken==0.13.0          # cl100k_base token counting for the chunker (§3.1 STEP 3)
+trafilatura==2.0.0        # main-content extraction from crawled HTML (§3.1 STEP 2)
+beautifulsoup4==4.15.0    # link discovery in the BFS crawler (crawler.py, not extraction)
 
 # Dev / CI (lint + test).
 pytest==8.4.2
