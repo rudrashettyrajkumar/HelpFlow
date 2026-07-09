@@ -1,0 +1,27 @@
+[project]
+name = "helpflow-backend"
+version = "0.1.0"
+description = "HelpFlow — AI customer-support agent, backend brain"
+requires-python = ">=3.12"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+# pyflakes, pycodestyle, isort, bugbear, comprehensions, pyupgrade.
+select = ["E", "F", "I", "B", "C4", "UP"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's dependency-injection idiom *is* a call in an argument default
+# (`= Depends(...)`, `= Header(...)`); these are evaluated once at import, so
+# B008 is a false positive for them.
+extend-immutable-calls = [
+  "fastapi.Depends", "fastapi.Query", "fastapi.Header", "fastapi.File",
+]
+
+[tool.pytest.ini_options]
+# asyncio_mode=auto lets `async def test_*` run without per-test decorators.
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["backend/tests"]
