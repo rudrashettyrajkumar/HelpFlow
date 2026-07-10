@@ -1,0 +1,753 @@
+{
+  "name": "WF-H — Handoff",
+  "nodes": [
+    {
+      "id": "webhook-handoff",
+      "name": "Webhook - Handoff",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -200,
+        300
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "handoff",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "set-auth-context",
+      "name": "Set Auth Context",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        40,
+        300
+      ],
+      "parameters": {
+        "mode": "manual",
+        "duplicateItem": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "authHeaderName",
+              "type": "string",
+              "value": "x-handoff-token"
+            },
+            {
+              "id": "a2",
+              "name": "authExpectedValue",
+              "type": "string",
+              "value": "={{ $env.HANDOFF_TOKEN }}"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "verify-token",
+      "name": "Verify Token",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        300
+      ],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// source: snippets/verify-token.js\n// Header-token check, shared by every webhook trigger (WF-H, WF-P, and WF-W in\n// E11). Deliberately generic: it never names a specific header or env var\n// itself (that would make it a literal-per-workflow copy, breaking the\n// source-of-truth byte-match) — each workflow's own Set node upstream supplies\n// `authHeaderName` + `authExpectedValue`, this just compares them against the\n// inbound webhook headers.\nfunction verifyToken(items) {\n  return items.map((item) => {\n    const headers = item.json.headers || {};\n    const headerName = String(item.json.authHeaderName || \"\").toLowerCase();\n    const expected = item.json.authExpectedValue;\n    const received = headers[headerName];\n    const valid = Boolean(expected) && received === expected;\n    return { json: { ...item.json, tokenValid: valid } };\n  });\n}\n\nif (typeof $input !== \"undefined\") {\n  return verifyToken($input.all());\n}\n\nmodule.exports = { verifyToken };"
+      }
+    },
+    {
+      "id": "if-token-valid",
+      "name": "IF Token Valid",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        520,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.tokenValid === true }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "respond-401",
+      "name": "Respond 401",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        760,
+        460
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"error\": \"unauthorized\" } }}",
+        "options": {
+          "responseCode": 401
+        }
+      }
+    },
+    {
+      "id": "respond-200-early",
+      "name": "Respond 200 Early",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        760,
+        180
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"status\": \"accepted\" } }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "guarded-escalation-update",
+      "name": "Guarded Escalation Update",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        760,
+        300
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE escalations\n   SET status = 'notified', notified_at = now()\n WHERE conversation_id = $1 AND status = 'open'\nRETURNING id AS escalation_id, conversation_id, reason",
+        "options": {
+          "queryReplacement": "={{ [$json.body.conversation_id] }}"
+        }
+      }
+    },
+    {
+      "id": "fetch-context",
+      "name": "Fetch Context",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1000,
+        300
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT c.id AS conversation_id, c.channel, c.customer_email, t.name AS tenant_name\n  FROM conversations c\n  JOIN tenants t ON t.id = c.tenant_id\n WHERE c.id = $1",
+        "options": {
+          "queryReplacement": "={{ [$json.conversation_id] }}"
+        }
+      }
+    },
+    {
+      "id": "fetch-transcript-preview",
+      "name": "Fetch Transcript Preview",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1240,
+        300
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT string_agg(role || ': ' || left(body, 140), E'\\n' ORDER BY created_at DESC) AS transcript_preview\n  FROM (\n    SELECT role, body, created_at FROM messages\n     WHERE conversation_id = $1\n     ORDER BY created_at DESC\n     LIMIT 3\n  ) recent",
+        "options": {
+          "queryReplacement": "={{ [$('Guarded Escalation Update').item.json.conversation_id] }}"
+        }
+      }
+    },
+    {
+      "id": "business-hours",
+      "name": "Business Hours",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1480,
+        300
+      ],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// source: snippets/business-hours.js\n// Is-now-within-BUSINESS_HOURS check for WF-H (spec E6 Req 3). Reads only\n// `$env.BUSINESS_HOURS` + `$env.BUSINESS_TZ` — no per-tenant hours exist in the\n// schema (confirmed: grep of sql/ + backend/ for business_hours is empty), so\n// this is a single global window, not per-tenant.\n//\n// BUSINESS_HOURS format: \"HH:MM-HH:MM\" (every day) or \"DDD-DDD HH:MM-HH:MM\"\n// (day range, e.g. \"MON-FRI 09:00-18:00\"). Wraps past midnight if start > end.\n// An unparseable value fails OPEN (never silently swallows a real escalation —\n// off-hours only suppresses the on-call ping, it never drops the alert).\nfunction isWithinBusinessHours(now, businessHours, businessTz) {\n  const spec = String(businessHours || \"\").trim();\n  const match = spec.match(/^(?:([A-Za-z]{3})-([A-Za-z]{3})\\s+)?(\\d{2}):(\\d{2})-(\\d{2}):(\\d{2})$/);\n  if (!match) return true;\n\n  const [, dayFrom, dayTo, h1, m1, h2, m2] = match;\n  const tz = businessTz || \"UTC\";\n\n  const parts = new Intl.DateTimeFormat(\"en-US\", {\n    timeZone: tz,\n    weekday: \"short\",\n    hour: \"2-digit\",\n    minute: \"2-digit\",\n    hour12: false,\n  }).formatToParts(now);\n  const get = (type) => parts.find((p) => p.type === type)?.value || \"\";\n\n  const DAYS = [\"SUN\", \"MON\", \"TUE\", \"WED\", \"THU\", \"FRI\", \"SAT\"];\n  const weekday = get(\"weekday\").toUpperCase().slice(0, 3);\n  const hour = parseInt(get(\"hour\"), 10) % 24; // Intl can return \"24\" for midnight\n  const minute = parseInt(get(\"minute\"), 10);\n  const minutesNow = hour * 60 + minute;\n  const minutesStart = parseInt(h1, 10) * 60 + parseInt(m1, 10);\n  const minutesEnd = parseInt(h2, 10) * 60 + parseInt(m2, 10);\n\n  let inDayRange = true;\n  if (dayFrom && dayTo) {\n    const from = DAYS.indexOf(dayFrom.toUpperCase());\n    const to = DAYS.indexOf(dayTo.toUpperCase());\n    const cur = DAYS.indexOf(weekday);\n    if (from === -1 || to === -1 || cur === -1) return true; // fail open\n    inDayRange = from <= to ? cur >= from && cur <= to : cur >= from || cur <= to;\n  }\n\n  const inTimeRange =\n    minutesStart <= minutesEnd\n      ? minutesNow >= minutesStart && minutesNow < minutesEnd\n      : minutesNow >= minutesStart || minutesNow < minutesEnd;\n\n  return inDayRange && inTimeRange;\n}\n\nfunction run(items, env) {\n  const inBusinessHours = isWithinBusinessHours(new Date(), env.BUSINESS_HOURS, env.BUSINESS_TZ);\n  return items.map((item) => ({ json: { ...item.json, inBusinessHours } }));\n}\n\nif (typeof $input !== \"undefined\") {\n  return run($input.all(), { BUSINESS_HOURS: $env.BUSINESS_HOURS, BUSINESS_TZ: $env.BUSINESS_TZ });\n}\n\nmodule.exports = { isWithinBusinessHours, run };"
+      }
+    },
+    {
+      "id": "if-in-hours",
+      "name": "IF In Hours",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1720,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.inBusinessHours === true }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "slack-notify",
+      "name": "Slack Notify",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        1960,
+        140
+      ],
+      "onError": "continueRegularOutput",
+      "continueOnFail": true,
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.SLACK_CHANNEL }}"
+        },
+        "text": "={{ `:rotating_light: *Escalation — ${$('Fetch Context').item.json.tenant_name}*\\n` + `Reason: ${$('Guarded Escalation Update').item.json.reason} · Channel: ${$('Fetch Context').item.json.channel}\\n` + `> ${$('Fetch Transcript Preview').item.json.transcript_preview || '(no prior messages)'}\\n` + `Open: ${$env.CONSOLE_BASE_URL}/app/inbox/${$('Fetch Context').item.json.conversation_id}` }}",
+        "otherOptions": {}
+      }
+    },
+    {
+      "id": "check-slack-notify-failure",
+      "name": "Check Slack Notify Failure",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2200,
+        140
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.error !== undefined && $json.error !== null }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "insert-workflow-error-slack",
+      "name": "Insert Workflow Error - Slack",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2440,
+        80
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO events (conversation_id, type, detail)\nVALUES ($1, 'workflow_error', jsonb_build_object('node', 'Slack Notify', 'message', $2::text))",
+        "options": {
+          "queryReplacement": "={{ [$('Guarded Escalation Update').item.json.conversation_id, $json.error] }}"
+        }
+      }
+    },
+    {
+      "id": "gmail-notify",
+      "name": "Gmail Notify",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1960,
+        300
+      ],
+      "onError": "continueRegularOutput",
+      "continueOnFail": true,
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "sendTo": "={{ $env.ONCALL_EMAIL }}",
+        "subject": "={{ `[HelpFlow] Escalation — ${$('Fetch Context').item.json.tenant_name}: ${$('Guarded Escalation Update').item.json.reason}` }}",
+        "message": "={{ `Tenant: ${$('Fetch Context').item.json.tenant_name}\\nChannel: ${$('Fetch Context').item.json.channel}\\nReason: ${$('Guarded Escalation Update').item.json.reason}\\nCustomer email: ${$('Fetch Context').item.json.customer_email || '(not captured)'}\\n\\nRecent messages:\\n${$('Fetch Transcript Preview').item.json.transcript_preview || '(no prior messages)'}\\n\\nOpen: ${$env.CONSOLE_BASE_URL}/app/inbox/${$('Fetch Context').item.json.conversation_id}` }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "check-gmail-notify-failure",
+      "name": "Check Gmail Notify Failure",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2200,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.error !== undefined && $json.error !== null }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "insert-workflow-error-gmail",
+      "name": "Insert Workflow Error - Gmail",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2440,
+        360
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO events (conversation_id, type, detail)\nVALUES ($1, 'workflow_error', jsonb_build_object('node', 'Gmail Notify', 'message', $2::text))",
+        "options": {
+          "queryReplacement": "={{ [$('Guarded Escalation Update').item.json.conversation_id, $json.error] }}"
+        }
+      }
+    },
+    {
+      "id": "merge-in-hours-notify",
+      "name": "Merge In Hours Notify",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        2680,
+        220
+      ],
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineAll",
+        "options": {}
+      }
+    },
+    {
+      "id": "insert-notified-event-in-hours",
+      "name": "Insert Notified Event - In Hours",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2920,
+        220
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO events (conversation_id, type, detail)\nVALUES ($1, 'notified', jsonb_build_object('offhours', false, 'reason', $2, 'tenant', $3))",
+        "options": {
+          "queryReplacement": "={{ [$('Guarded Escalation Update').item.json.conversation_id, $('Guarded Escalation Update').item.json.reason, $('Fetch Context').item.json.tenant_name] }}"
+        }
+      }
+    },
+    {
+      "id": "slack-low-priority-note",
+      "name": "Slack Low-Priority Note",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        1960,
+        460
+      ],
+      "onError": "continueRegularOutput",
+      "continueOnFail": true,
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.SLACK_CHANNEL }}"
+        },
+        "text": "={{ `:crescent_moon: Off-hours escalation (no on-call ping) — *${$('Fetch Context').item.json.tenant_name}*\\n` + `Reason: ${$('Guarded Escalation Update').item.json.reason} · Channel: ${$('Fetch Context').item.json.channel}\\n` + `Open when you're back: ${$env.CONSOLE_BASE_URL}/app/inbox/${$('Fetch Context').item.json.conversation_id}` }}",
+        "otherOptions": {}
+      }
+    },
+    {
+      "id": "check-offhours-slack-failure",
+      "name": "Check Offhours Slack Failure",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2200,
+        460
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.error !== undefined && $json.error !== null }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "insert-workflow-error-offhours-slack",
+      "name": "Insert Workflow Error - Offhours Slack",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2440,
+        520
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO events (conversation_id, type, detail)\nVALUES ($1, 'workflow_error', jsonb_build_object('node', 'Slack Low-Priority Note', 'message', $2::text))",
+        "options": {
+          "queryReplacement": "={{ [$('Guarded Escalation Update').item.json.conversation_id, $json.error] }}"
+        }
+      }
+    },
+    {
+      "id": "insert-notified-event-off-hours",
+      "name": "Insert Notified Event - Off Hours",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2680,
+        460
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO events (conversation_id, type, detail)\nVALUES ($1, 'notified', jsonb_build_object('offhours', true, 'reason', $2, 'tenant', $3))",
+        "options": {
+          "queryReplacement": "={{ [$('Guarded Escalation Update').item.json.conversation_id, $('Guarded Escalation Update').item.json.reason, $('Fetch Context').item.json.tenant_name] }}"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook - Handoff": {
+      "main": [
+        [
+          {
+            "node": "Set Auth Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Auth Context": {
+      "main": [
+        [
+          {
+            "node": "Verify Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Token": {
+      "main": [
+        [
+          {
+            "node": "IF Token Valid",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Token Valid": {
+      "main": [
+        [
+          {
+            "node": "Respond 200 Early",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Guarded Escalation Update",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 401",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Guarded Escalation Update": {
+      "main": [
+        [
+          {
+            "node": "Fetch Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Context": {
+      "main": [
+        [
+          {
+            "node": "Fetch Transcript Preview",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Transcript Preview": {
+      "main": [
+        [
+          {
+            "node": "Business Hours",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Business Hours": {
+      "main": [
+        [
+          {
+            "node": "IF In Hours",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF In Hours": {
+      "main": [
+        [
+          {
+            "node": "Slack Notify",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Gmail Notify",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Slack Low-Priority Note",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack Notify": {
+      "main": [
+        [
+          {
+            "node": "Check Slack Notify Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Slack Notify Failure": {
+      "main": [
+        [
+          {
+            "node": "Insert Workflow Error - Slack",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Merge In Hours Notify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Workflow Error - Slack": {
+      "main": [
+        [
+          {
+            "node": "Merge In Hours Notify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gmail Notify": {
+      "main": [
+        [
+          {
+            "node": "Check Gmail Notify Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Gmail Notify Failure": {
+      "main": [
+        [
+          {
+            "node": "Insert Workflow Error - Gmail",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Merge In Hours Notify",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Insert Workflow Error - Gmail": {
+      "main": [
+        [
+          {
+            "node": "Merge In Hours Notify",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge In Hours Notify": {
+      "main": [
+        [
+          {
+            "node": "Insert Notified Event - In Hours",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack Low-Priority Note": {
+      "main": [
+        [
+          {
+            "node": "Check Offhours Slack Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Offhours Slack Failure": {
+      "main": [
+        [
+          {
+            "node": "Insert Workflow Error - Offhours Slack",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Insert Notified Event - Off Hours",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Workflow Error - Offhours Slack": {
+      "main": [
+        [
+          {
+            "node": "Insert Notified Event - Off Hours",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
