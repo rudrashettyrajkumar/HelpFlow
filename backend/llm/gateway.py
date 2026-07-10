@@ -41,9 +41,12 @@ from backend.utils.config import get_settings
 _log = logging.getLogger("helpflow.llm_gateway")
 
 # Per-role request timeout (seconds) — UNCHANGED from `llm_router.py` (spec Req 2).
+# `gap_cluster` (spec E9): an offline batch call (backend/scripts/cluster_gaps.py),
+# not a customer-facing hot path — generous timeout, still bounded.
 ROLE_TIMEOUTS: dict[str, float] = {
     "rewrite": 8.0,
     "answer": 30.0,
+    "gap_cluster": 45.0,
 }
 
 

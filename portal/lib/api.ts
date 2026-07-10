@@ -4,15 +4,21 @@ import { byokHeaders } from './llmConfig'
 import { ApiError } from './types'
 import type {
   AuthResponse,
+  ConversationMessage,
   CreateWorkspaceResponse,
   CrawlProgressEvent,
   DemoBudget,
   GatePayload,
   MeResponse,
   ModelsCatalog,
+  Source,
   ValidateResult,
   Workspace,
 } from './types'
+
+function tenantHeaders(tenantId: string): HeadersInit {
+  return { ...authHeaders(), 'X-Tenant-Id': tenantId }
+}
 
 function authHeaders(): HeadersInit {
   const token = getToken()
@@ -24,14 +30,16 @@ async function throwIfError(res: Response): Promise<void> {
   if (res.status === 401) handleUnauthorized()
   let detail = `Request failed (${res.status})`
   let gate: GatePayload | null = null
+  let code: string | null = null
   try {
     const body = await res.json()
     if (res.status === 403 && body?.code === 'trial_limit') gate = body as GatePayload
     detail = body?.detail ?? body?.message ?? detail
+    code = body?.error ?? body?.code ?? null
   } catch {
     // non-JSON error body — keep the generic message
   }
-  throw new ApiError(detail, res.status, gate)
+  throw new ApiError(detail, res.status, gate, code)
 }
 
 async function parse<T>(res: Response): Promise<T> {
@@ -186,6 +194,78 @@ export async function* crawlSite(
   for await (const frame of parseSSE(res.body)) {
     yield frame.data as CrawlProgressEvent
   }
+}
+
+export function fetchSources(tenantId: string): Promise<Source[]> {
+  return fetch(`${API_URL}/admin/sources`, { headers: tenantHeaders(tenantId) }).then((r) =>
+    parse<Source[]>(r),
+  )
+}
+
+export function refreshSource(tenantId: string, sourceId: string): Promise<{ deleted?: boolean }> {
+  return fetch(`${API_URL}/admin/sources/${sourceId}/refresh`, {
+    method: 'POST',
+    headers: tenantHeaders(tenantId),
+  }).then((r) => parse(r))
+}
+
+export function deleteSource(tenantId: string, sourceId: string): Promise<void> {
+  return fetch(`${API_URL}/admin/sources/${sourceId}`, {
+    method: 'DELETE',
+    headers: tenantHeaders(tenantId),
+  }).then((r) => parse(r))
+}
+
+// --- Console — full transcript read, direct to FastAPI (backend/api/conversations.py) ---
+
+export function fetchConversationMessages(
+  tenantId: string,
+  conversationId: string,
+): Promise<ConversationMessage[]> {
+  return fetch(`${API_URL}/conversations/${conversationId}/messages`, {
+    headers: tenantHeaders(tenantId),
+  }).then((r) => parse<ConversationMessage[]>(r))
+}
+
+// --- Console — agent actions, via the portal's OWN server-side proxy
+// (spec E9 Req 1: "route handlers that attach the token server-side") ---
+// portal/app/api/conversations/[id]/*/route.ts forwards these to FastAPI.
+
+function proxyHeaders(tenantId: string): HeadersInit {
+  return { ...tenantHeaders(tenantId), 'Content-Type': 'application/json' }
+}
+
+export function claimConversation(tenantId: string, conversationId: string): Promise<void> {
+  return fetch(`/api/conversations/${conversationId}/claim`, {
+    method: 'POST',
+    headers: proxyHeaders(tenantId),
+  }).then((r) => parse(r))
+}
+
+export function replyToConversation(
+  tenantId: string,
+  conversationId: string,
+  body: string,
+): Promise<{ id: string; role: string; body: string }> {
+  return fetch(`/api/conversations/${conversationId}/reply`, {
+    method: 'POST',
+    headers: proxyHeaders(tenantId),
+    body: JSON.stringify({ body }),
+  }).then((r) => parse(r))
+}
+
+export function resolveConversation(tenantId: string, conversationId: string): Promise<void> {
+  return fetch(`/api/conversations/${conversationId}/resolve`, {
+    method: 'POST',
+    headers: proxyHeaders(tenantId),
+  }).then((r) => parse(r))
+}
+
+export function handbackConversation(tenantId: string, conversationId: string): Promise<void> {
+  return fetch(`/api/conversations/${conversationId}/handback`, {
+    method: 'POST',
+    headers: proxyHeaders(tenantId),
+  }).then((r) => parse(r))
 }
 
 /** BYOK headers for anything the portal itself calls with a model selection

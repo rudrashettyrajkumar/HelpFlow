@@ -40,10 +40,20 @@ export type GatePayload = {
 export class ApiError extends Error {
   status: number
   gate: GatePayload | null
-  constructor(message: string, status: number, gate: GatePayload | null = null) {
+  /** The raw `error` code from a `{error, detail}` body (admin_sources.py's
+   * `IngestValidationError` shape) — e.g. `'embed_mismatch'` (spec E9 Req 3:
+   * "the embed-mismatch 409 dialog reused here"). */
+  code: string | null
+  constructor(
+    message: string,
+    status: number,
+    gate: GatePayload | null = null,
+    code: string | null = null,
+  ) {
     super(message)
     this.status = status
     this.gate = gate
+    this.code = code
   }
 }
 
@@ -92,3 +102,28 @@ export type CrawlProgressEvent =
   | { stage: 'ready'; pages: number; chunks: number }
   | { stage: 'error'; detail: string }
   | { stage: 'info'; note: string }
+
+// --- Sources admin (backend/api/admin_sources.py) ---
+
+export type Source = {
+  id: string
+  url: string
+  title: string | null
+  status: 'crawling' | 'ready' | 'error'
+  chunk_count: number | null
+  crawled_at: string | null
+  error: string | null
+}
+
+// --- Console — full transcript (backend/api/conversations.py, spec E9) ---
+// Distinct from Supabase's `VConversation` (lib/supabase.ts, the masked list
+// read) — this is the JWT-owner-scoped FULL-transcript read.
+
+export type ConversationMessage = {
+  id: string
+  role: 'user' | 'assistant' | 'agent' | 'system'
+  body: string
+  citations: { n: number; source_url: string; page_title: string; cited: boolean }[]
+  confidence: string | null
+  created_at: string
+}

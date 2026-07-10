@@ -3,7 +3,7 @@
 import { useEffect } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
-import { Loader2, Sliders, Store } from 'lucide-react'
+import { BarChart3, Globe2, Inbox, Loader2, Sliders, Store } from 'lucide-react'
 import { Logo } from '@/components/Logo'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { TrialBadge } from '@/components/TrialBadge'
@@ -12,6 +12,9 @@ import { useAuth } from '@/lib/auth-context'
 
 const NAV = [
   { href: '/app', label: 'Workspaces', icon: Store },
+  { href: '/app/inbox', label: 'Inbox', icon: Inbox },
+  { href: '/app/sources', label: 'Sources', icon: Globe2 },
+  { href: '/app/analytics', label: 'Analytics', icon: BarChart3 },
   { href: '/app/studio', label: 'Model Studio', icon: Sliders },
 ]
 

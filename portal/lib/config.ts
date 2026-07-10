@@ -5,6 +5,12 @@ export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000
 export const WIDGET_URL = process.env.NEXT_PUBLIC_WIDGET_URL ?? 'http://localhost:5173'
 export const DEMO_TENANT_WIDGET_KEY = process.env.NEXT_PUBLIC_DEMO_TENANT_WIDGET_KEY ?? ''
 
+// Console reads (spec E9 Req 1, ARCHITECTURE §5.5): the anon key through the
+// masked RLS views ONLY — same PostgREST-over-HTTP contract LeadFlow's
+// dashboard ports from. Never the service key; that lives in FastAPI/n8n only.
+export const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? ''
+export const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? ''
+
 export const RAJ = {
   name: process.env.NEXT_PUBLIC_RAJ_NAME ?? 'Raj',
   linkedin: process.env.NEXT_PUBLIC_RAJ_LINKEDIN_URL ?? '',

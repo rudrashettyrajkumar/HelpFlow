@@ -12,7 +12,17 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.api import admin_sources, auth, chat, health, models, premium, widget, workspaces
+from backend.api import (
+    admin_sources,
+    auth,
+    chat,
+    conversations,
+    health,
+    models,
+    premium,
+    widget,
+    workspaces,
+)
 from backend.scripts.create_collection import ensure_collection
 from backend.utils import redis_client, supabase_client
 from backend.utils.config import get_settings
@@ -75,6 +85,7 @@ def create_app() -> FastAPI:
     app.include_router(auth.router)
     app.include_router(workspaces.router)
     app.include_router(premium.router)
+    app.include_router(conversations.router)
 
     return app
 
