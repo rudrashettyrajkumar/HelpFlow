@@ -15,13 +15,14 @@ pipeline schedules never block the customer's stream.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from backend.channels import conversation_store
 from backend.channels.conversation_store import ConversationNotFound
 from backend.channels.subscribe import stream_conversation_events
+from backend.llm.runconfig import BYOKError, RunConfig, from_headers
 from backend.middleware.rate_limit import (
     RateLimitExceeded,
     check_conversation_message_limit,
@@ -33,6 +34,16 @@ from backend.middleware.tenant_auth import resolve_tenant
 from backend.pipeline.chat_pipeline import run_chat_once, run_chat_stream
 
 router = APIRouter()
+
+
+def _parse_cfg(request: Request) -> RunConfig:
+    """The request's BYOK selection (spec E4 Req 3), rejected as 422 before any
+    tenant/conversation work — a bad header trio is a fixable request error,
+    never a mid-stream surprise."""
+    try:
+        return from_headers(request.headers)
+    except BYOKError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
 
 
 class ChatRequest(BaseModel):
@@ -69,8 +80,12 @@ async def _resolve(body: ChatRequest, tenant_id: str) -> tuple[dict, dict]:
 
 @router.post("/chat/stream", response_model=None)
 async def chat_stream(
-    body: ChatRequest, background_tasks: BackgroundTasks, tenant_id: str = Depends(resolve_tenant)
+    body: ChatRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    tenant_id: str = Depends(resolve_tenant),
 ) -> StreamingResponse:
+    cfg = _parse_cfg(request)
     tenant, conversation = await _resolve(body, tenant_id)
     conversation_id = str(conversation["id"])
     background_tasks.add_task(increment_tenant_message_count, tenant_id)
@@ -82,6 +97,7 @@ async def chat_stream(
             conversation=conversation,
             message=body.message,
             background_tasks=background_tasks,
+            cfg=cfg,
         ),
         media_type="text/event-stream",
     )
@@ -89,8 +105,12 @@ async def chat_stream(
 
 @router.post("/chat")
 async def chat_once(
-    body: ChatRequest, background_tasks: BackgroundTasks, tenant_id: str = Depends(resolve_tenant)
+    body: ChatRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    tenant_id: str = Depends(resolve_tenant),
 ) -> dict:
+    cfg = _parse_cfg(request)
     tenant, conversation = await _resolve(body, tenant_id)
     conversation_id = str(conversation["id"])
     background_tasks.add_task(increment_tenant_message_count, tenant_id)
@@ -101,6 +121,7 @@ async def chat_once(
         conversation=conversation,
         message=body.message,
         background_tasks=background_tasks,
+        cfg=cfg,
     )
 
 

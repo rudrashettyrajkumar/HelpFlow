@@ -105,7 +105,7 @@ def test_conversation_rate_limited_is_429(client):
 def test_chat_stream_happy_path_matches_frozen_sse_contract(client):
     convo = _conversation()
 
-    async def fake_run_chat_stream(*, tenant, conversation, message, background_tasks):
+    async def fake_run_chat_stream(*, tenant, conversation, message, background_tasks, cfg=None):
         yield 'id: 0\nevent: token\ndata: {"seq": 0, "t": "Hi"}\n\n'
         yield 'event: sources\ndata: {"sources": []}\n\n'
         yield "event: done\ndata: {}\n\n"

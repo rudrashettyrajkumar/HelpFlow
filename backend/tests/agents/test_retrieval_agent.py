@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from backend.agents.retrieval_agent import retrieve
-from backend.utils.embeddings import EmbeddingError
+from backend.services.embed_signature import EmbeddingError
 
 
 def _point(id_, text, source_url, score, tenant_id):

@@ -12,9 +12,19 @@ def test_defaults_populate():
     assert s.RELEVANCE_THRESHOLD == 0.30
     assert s.MAX_PAGES == 50
     assert s.MAX_CONCURRENT_LLM_CALLS == 8
-    assert s.ROUTER_MODEL.startswith("openrouter/")
-    assert s.ANSWER_MODEL.startswith("openrouter/")
-    assert s.EMBED_MODEL.startswith("openrouter/")
+    assert s.DEMO_REWRITER_MODEL.startswith("groq/")
+    assert s.DEMO_ANSWERER_MODEL.startswith("groq/")
+    assert s.DEMO_EMBED_MODEL.startswith("openrouter/")
+    assert s.DEMO_CHAT_DAILY == 150
+    assert s.DEMO_EMBED_DAILY == 100
+
+
+def test_rerank_enabled_defaults_true_when_unset(monkeypatch):
+    # The test suite's own env forces RERANK_ENABLED=false (conftest._TEST_ENV)
+    # to keep FlashRank's model download out of the hot path — verify the
+    # class-level default separately, with that override removed.
+    monkeypatch.delenv("RERANK_ENABLED", raising=False)
+    assert Settings().RERANK_ENABLED is True
 
 
 def test_sensitive_intents_parses():

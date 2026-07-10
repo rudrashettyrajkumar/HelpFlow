@@ -103,7 +103,7 @@ def test_rate_limited_tenant_is_429(client):
 
 
 def test_create_source_streams_sse_progress(client):
-    async def fake_run_ingestion(*, tenant_id, url, sitemap_url, max_pages):
+    async def fake_run_ingestion(*, tenant_id, url, sitemap_url, max_pages, cfg=None):
         assert tenant_id == _TENANT_ID
         yield {"stage": "discovering"}
         yield {"stage": "fetching", "done": 1, "total": 1}
@@ -122,6 +122,67 @@ def test_create_source_streams_sse_progress(client):
     events = _parse_sse(resp.text)
     assert events[-1] == {"stage": "ready", "pages": 1, "chunks": 3}
     assert events[0] == {"stage": "discovering"}
+
+
+def test_mismatched_embed_model_is_409_before_any_streaming(client):
+    """spec E4 Req 7: a tenant already pinned to one embedding space gets a
+    409 for a DIFFERENT `X-Embed-*` selection, rejected before the SSE stream
+    ever opens (never a half-ingested second space)."""
+
+    async def fake_get_pin(tenant_id):
+        return "openai/text-embedding-3-small"
+
+    with (
+        patch("backend.api.admin_sources.check_and_increment_tenant_crawl", _no_op_crawl_limit),
+        patch("backend.api.admin_sources.embed_signature.get_pin", fake_get_pin),
+    ):
+        resp = client.post(
+            "/admin/sources",
+            json={"url": "https://example.com"},
+            headers={
+                **_ADMIN_HEADERS,
+                "X-Embed-Provider": "openrouter",
+                "X-Embed-Key": "sk-or-x",
+            },
+        )
+
+    assert resp.status_code == 409
+    assert resp.json()["error"] == "embed_mismatch"
+
+
+def test_matching_embed_model_passes_the_pin_check(client):
+    async def fake_get_pin(tenant_id):
+        return "openrouter/nvidia/llama-nemotron-embed-vl-1b-v2:free"
+
+    async def fake_run_ingestion(*, tenant_id, url, sitemap_url, max_pages, cfg=None):
+        yield {"stage": "ready", "pages": 0, "chunks": 0}
+
+    with (
+        patch("backend.api.admin_sources.check_and_increment_tenant_crawl", _no_op_crawl_limit),
+        patch("backend.api.admin_sources.embed_signature.get_pin", fake_get_pin),
+        patch("backend.api.admin_sources.run_ingestion", fake_run_ingestion),
+    ):
+        resp = client.post(
+            "/admin/sources",
+            json={"url": "https://example.com"},
+            headers={
+                **_ADMIN_HEADERS,
+                "X-Embed-Provider": "openrouter",
+                "X-Embed-Model": "nvidia/llama-nemotron-embed-vl-1b-v2:free",
+                "X-Embed-Key": "sk-or-x",
+            },
+        )
+
+    assert resp.status_code == 200
+
+
+def test_invalid_byok_header_is_422(client):
+    resp = client.post(
+        "/admin/sources",
+        json={"url": "https://example.com"},
+        headers={**_ADMIN_HEADERS, "X-LLM-Provider": "not-a-real-provider", "X-LLM-Key": "k"},
+    )
+    assert resp.status_code == 422
 
 
 # ---------------------------------------------------------------- list / refresh / delete

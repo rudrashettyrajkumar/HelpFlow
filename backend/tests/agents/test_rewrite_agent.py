@@ -3,7 +3,6 @@ sensitive-intent override that forces `route=handoff` in Python even when the
 model's own route disagrees (spec E3 Required tests)."""
 
 import json
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -11,17 +10,13 @@ import pytest
 from backend.agents.rewrite_agent import rewrite
 
 
-def _fake_response(content: str):
-    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
-
-
 async def _patched_rewrite(content=None, side_effect=None, **kwargs):
     mock = (
         AsyncMock(side_effect=side_effect)
         if side_effect
-        else AsyncMock(return_value=_fake_response(content))
+        else AsyncMock(return_value=content)
     )
-    with patch("backend.agents.rewrite_agent.llm_router.complete", mock):
+    with patch("backend.agents.rewrite_agent.gateway.complete", mock):
         return await rewrite("do you ship to Canada?", **kwargs)
 
 

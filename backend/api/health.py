@@ -19,8 +19,8 @@ from collections.abc import Awaitable, Callable
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
+from backend.llm.gateway import liveness
 from backend.utils import supabase_client
-from backend.utils.llm_router import liveness
 from backend.utils.qdrant_client import QDRANT_TIMEOUT_S, get_qdrant
 from backend.utils.redis_client import REDIS_TIMEOUT_S, get_redis, hf_key
 

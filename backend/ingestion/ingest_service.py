@@ -34,10 +34,19 @@ from typing import Any
 from backend.ingestion.chunker import Chunk, chunk_page
 from backend.ingestion.crawler import discover
 from backend.ingestion.extractor import extract_page
+from backend.llm.runconfig import DEFAULT, RunConfig
+from backend.services import embed_signature
+from backend.services.demo_budget import DemoBudgetExceeded
+from backend.services.embed_signature import EmbeddingError
 from backend.utils import supabase_client
 from backend.utils.config import get_settings
-from backend.utils.embeddings import EmbeddingError, embed
 from backend.utils.qdrant_client import get_qdrant
+
+_DEMO_EXHAUSTED_DETAIL = (
+    "HelpFlow's demo runs on shared free-tier keys and today's shared embedding "
+    "quota is used up. It resets at midnight UTC — or add your own free Groq/"
+    "OpenRouter key in Model Studio for unthrottled ingestion."
+)
 
 _log = logging.getLogger("helpflow.ingest_service")
 
@@ -175,6 +184,7 @@ async def run_ingestion(
     url: str | None = None,
     sitemap_url: str | None = None,
     max_pages: int | None = None,
+    cfg: RunConfig = DEFAULT,
 ) -> AsyncIterator[dict[str, Any]]:
     """Yield progress events per spec Req 8's exact shapes:
 
@@ -182,10 +192,18 @@ async def run_ingestion(
     (once per completed page) → `{"stage": "embedding", "pct": P}` (once per
     embed batch) → terminal `{"stage": "ready", "pages", "chunks"}` or
     `{"stage": "error", "detail"}`.
+
+    Embeds through the BYOK factory (spec E4 Req 7): `cfg`'s embed selection
+    (or the demo env default) is resolved ONCE for the whole crawl — the
+    embed-space MISMATCH check (409, before any streaming) already happened
+    in `api/admin_sources.py`, so this generator only needs to embed and, on
+    full success, pin the tenant to whatever selection it used.
     """
     settings = get_settings()
     collection = settings.QDRANT_COLLECTION
     cap = max_pages if max_pages is not None else settings.MAX_PAGES
+    selection = embed_signature.request_selection(cfg)
+    is_demo = embed_signature.is_demo_embed(cfg)
 
     yield {"stage": "discovering"}
     urls = await discover(url or sitemap_url or "", sitemap_url=sitemap_url, max_pages=cap)
@@ -227,10 +245,29 @@ async def run_ingestion(
         texts = [c.text for _, c in batch]
 
         try:
-            vectors = await embed(texts)
+            vectors = await embed_signature.embed(texts, selection, is_demo=is_demo)
+        except DemoBudgetExceeded:
+            _log.info(
+                "demo embed budget exhausted; rolling back crawl", extra={"tenant_id": tenant_id}
+            )
+            await delete_source_points(collection, list(touched_source_ids))
+            await _abort_crawl(
+                [r.source_id for r in ok_results], reason="demo embed budget exhausted"
+            )
+            yield {"stage": "error", "detail": _DEMO_EXHAUSTED_DETAIL}
+            return
         except EmbeddingError:
             try:
-                vectors = await embed(texts)  # one retry, spec Req 5
+                vectors = await embed_signature.embed(
+                    texts, selection, is_demo=is_demo
+                )  # one retry, spec Req 5
+            except DemoBudgetExceeded:
+                await delete_source_points(collection, list(touched_source_ids))
+                await _abort_crawl(
+                    [r.source_id for r in ok_results], reason="demo embed budget exhausted"
+                )
+                yield {"stage": "error", "detail": _DEMO_EXHAUSTED_DETAIL}
+                return
             except EmbeddingError as exc:
                 _log.warning(
                     "embedding failed twice; rolling back crawl", extra={"tenant_id": tenant_id}
@@ -282,16 +319,25 @@ async def run_ingestion(
     for source_id, count in chunk_counts.items():
         await _mark_ready(source_id, title=titles[source_id], chunk_count=count)
 
+    # The FIRST successful ingest pins the tenant's embedding space (spec Req 7,
+    # ARCHITECTURE §4.5); re-setting the same pin on later crawls is a no-op.
+    await embed_signature.pin(tenant_id, selection)
+
     yield {"stage": "ready", "pages": total, "chunks": total_chunks}
 
 
-async def run_refresh(*, tenant_id: str, source_id: str, url: str) -> dict[str, Any]:
+async def run_refresh(
+    *, tenant_id: str, source_id: str, url: str, cfg: RunConfig = DEFAULT
+) -> dict[str, Any]:
     """Re-crawl a single already-known source: delete its Qdrant points, then
     re-fetch/extract/chunk/embed/upsert just that one URL (spec Req 7).
 
     Synchronous (no SSE) — a single page is fast enough that a plain JSON
     response is simpler than a one-event stream, and the interface table
-    (§7.1) doesn't require SSE for refresh, only for the initial crawl.
+    (§7.1) doesn't require SSE for refresh, only for the initial crawl. Embeds
+    in the tenant's PINNED space (`query_selection`), not whatever the
+    request currently has selected — a refresh must never silently create a
+    second embedding space for one source.
     """
     settings = get_settings()
     collection = settings.QDRANT_COLLECTION
@@ -310,11 +356,19 @@ async def run_refresh(*, tenant_id: str, source_id: str, url: str) -> dict[str, 
 
     created_at = time.time()
     texts = [c.text for c in chunks]
+    selection = await embed_signature.query_selection(tenant_id, cfg)
+    is_demo = embed_signature.is_demo_embed(cfg)
     try:
-        vectors = await embed(texts)
+        vectors = await embed_signature.embed(texts, selection, is_demo=is_demo)
+    except DemoBudgetExceeded:
+        await _mark_error(source_id, error="demo embed budget exhausted")
+        return {"status": "error", "detail": _DEMO_EXHAUSTED_DETAIL}
     except EmbeddingError:
         try:
-            vectors = await embed(texts)
+            vectors = await embed_signature.embed(texts, selection, is_demo=is_demo)
+        except DemoBudgetExceeded:
+            await _mark_error(source_id, error="demo embed budget exhausted")
+            return {"status": "error", "detail": _DEMO_EXHAUSTED_DETAIL}
         except EmbeddingError as exc:
             await _mark_error(source_id, error=f"embedding failed: {exc}")
             return {"status": "error", "detail": str(exc)}
