@@ -59,7 +59,7 @@ async def _resolve(body: ChatRequest, tenant_id: str) -> tuple[dict, dict]:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Unknown tenant.")
 
     try:
-        await check_tenant_message_limit(tenant_id)
+        await check_tenant_message_limit(tenant_id, tenant.get("plan"))
     except RateLimitExceeded as exc:
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)) from exc
 

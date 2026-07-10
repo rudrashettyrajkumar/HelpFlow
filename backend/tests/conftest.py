@@ -19,6 +19,7 @@ _TEST_ENV = {
     "UPSTASH_TOKEN": "test-upstash-token",
     "ADMIN_TOKEN": "test-admin-token",
     "HANDOFF_TOKEN": "test-handoff-token",
+    "JWT_SECRET": "test-jwt-secret",
     # Disabled in tests: FlashRank downloads its ONNX model on first use, which
     # would make the suite network-dependent and flaky. `test_reranker.py`
     # flips this on per-test where it specifically exercises the ranker.

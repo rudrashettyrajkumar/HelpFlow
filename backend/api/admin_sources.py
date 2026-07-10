@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
+from backend.channels import conversation_store
 from backend.ingestion.errors import IngestValidationError
 from backend.ingestion.ingest_service import (
     delete_source_points,
@@ -106,7 +107,21 @@ async def _stream_ingestion(
     sitemap_url: str | None,
     max_pages: int | None,
     cfg: RunConfig,
+    trial_clamped: bool,
 ) -> AsyncIterator[str]:
+    if trial_clamped:
+        # Additive to the ingestion SSE vocabulary (this stream isn't FROZEN —
+        # only chat/stream is, invariant #10): a friendly heads-up BEFORE
+        # "discovering", never a raw truncation the owner has to guess at
+        # (spec Req 4, ARCHITECTURE §5.3).
+        yield format_event(
+            "progress",
+            {
+                "stage": "info",
+                "note": f"Trial workspaces crawl up to {get_settings().MAX_TRIAL_PAGES} pages. "
+                "Upgrade to lift the cap.",
+            },
+        )
     async for event in run_ingestion(
         tenant_id=tenant_id, url=url, sitemap_url=sitemap_url, max_pages=max_pages, cfg=cfg
     ):
@@ -129,13 +144,21 @@ async def create_source(
             status_code=exc.status_code, content={"error": exc.error, "detail": exc.detail}
         )
 
+    settings = get_settings()
+    tenant = await conversation_store.get_tenant(tenant_id)
+    is_trial = bool(tenant and tenant.get("plan") == "trial")
+    requested = body.max_pages if body.max_pages is not None else settings.MAX_PAGES
+    effective_max_pages = min(requested, settings.MAX_TRIAL_PAGES) if is_trial else requested
+    trial_clamped = is_trial and effective_max_pages < requested
+
     return StreamingResponse(
         _stream_ingestion(
             tenant_id=tenant_id,
             url=body.url,
             sitemap_url=body.sitemap_url,
-            max_pages=body.max_pages,
+            max_pages=effective_max_pages,
             cfg=cfg,
+            trial_clamped=trial_clamped,
         ),
         media_type="text/event-stream",
     )

@@ -26,6 +26,10 @@ async def _no_op_crawl_limit(tenant_id: str) -> None:
     return None
 
 
+async def _fake_get_tenant(tenant_id: str) -> dict:
+    return {"id": tenant_id, "plan": "premium"}
+
+
 # ---------------------------------------------------------------- auth / validation
 
 
@@ -112,6 +116,7 @@ def test_create_source_streams_sse_progress(client):
 
     with (
         patch("backend.api.admin_sources.check_and_increment_tenant_crawl", _no_op_crawl_limit),
+        patch("backend.api.admin_sources.conversation_store.get_tenant", _fake_get_tenant),
         patch("backend.api.admin_sources.run_ingestion", fake_run_ingestion),
     ):
         resp = client.post(
@@ -122,6 +127,33 @@ def test_create_source_streams_sse_progress(client):
     events = _parse_sse(resp.text)
     assert events[-1] == {"stage": "ready", "pages": 1, "chunks": 3}
     assert events[0] == {"stage": "discovering"}
+
+
+def test_trial_tenant_crawl_is_clamped_with_a_friendly_note(client):
+    """spec E5 Req 4: a plan='trial' workspace's crawl clamps to
+    MAX_TRIAL_PAGES and the SSE stream carries a friendly note BEFORE
+    "discovering" — never a silent truncation."""
+
+    async def fake_get_tenant(tenant_id: str) -> dict:
+        return {"id": tenant_id, "plan": "trial"}
+
+    async def fake_run_ingestion(*, tenant_id, url, sitemap_url, max_pages, cfg=None):
+        assert max_pages == 25  # MAX_TRIAL_PAGES, clamped down from MAX_PAGES=50
+        yield {"stage": "ready", "pages": 0, "chunks": 0}
+
+    with (
+        patch("backend.api.admin_sources.check_and_increment_tenant_crawl", _no_op_crawl_limit),
+        patch("backend.api.admin_sources.conversation_store.get_tenant", fake_get_tenant),
+        patch("backend.api.admin_sources.run_ingestion", fake_run_ingestion),
+    ):
+        resp = client.post(
+            "/admin/sources", json={"url": "https://example.com"}, headers=_ADMIN_HEADERS
+        )
+
+    assert resp.status_code == 200
+    events = _parse_sse(resp.text)
+    assert events[0]["stage"] == "info"
+    assert "25 pages" in events[0]["note"]
 
 
 def test_mismatched_embed_model_is_409_before_any_streaming(client):
@@ -159,6 +191,7 @@ def test_matching_embed_model_passes_the_pin_check(client):
 
     with (
         patch("backend.api.admin_sources.check_and_increment_tenant_crawl", _no_op_crawl_limit),
+        patch("backend.api.admin_sources.conversation_store.get_tenant", _fake_get_tenant),
         patch("backend.api.admin_sources.embed_signature.get_pin", fake_get_pin),
         patch("backend.api.admin_sources.run_ingestion", fake_run_ingestion),
     ):

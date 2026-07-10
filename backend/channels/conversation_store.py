@@ -27,7 +27,7 @@ async def get_tenant(tenant_id: str) -> dict[str, Any] | None:
     import json
 
     row = await supabase_client.fetchrow(
-        "SELECT id, name, widget_config, sensitive_intents FROM tenants WHERE id = $1",
+        "SELECT id, name, widget_config, sensitive_intents, plan FROM tenants WHERE id = $1",
         tenant_id,
     )
     if row is None:
