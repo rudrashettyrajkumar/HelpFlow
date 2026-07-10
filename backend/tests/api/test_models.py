@@ -1,8 +1,9 @@
-"""`GET /api/models` · `POST /api/models/validate` (spec E4 Req 4)."""
+"""`GET /api/models` · `POST /api/models/validate` · `GET /api/demo-budget`
+(spec E4 Req 4, spec E8 Req 4)."""
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 
 def test_get_models_returns_the_catalog_verbatim(client):
@@ -45,3 +46,24 @@ def test_validate_never_echoes_the_key_on_failure(client):
     assert body["ok"] is False
     assert body["error_code"] == "key_invalid"
     assert secret not in resp.text
+
+
+def test_demo_budget_degrades_to_full_cap_when_redis_unavailable(client):
+    # The autouse `_no_real_redis` fixture makes every Redis call raise —
+    # `remaining_today`'s own degrade-never-break contract reports the full cap.
+    resp = client.get("/api/demo-budget")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["chat"] == {"remaining": 150, "cap": 150}
+    assert body["embed"] == {"remaining": 100, "cap": 100}
+    assert "resets_at" in body
+
+
+def test_demo_budget_reports_remaining_from_the_helper(client):
+    with patch(
+        "backend.api.models.demo_budget.remaining_today", AsyncMock(side_effect=[12, 40])
+    ):
+        resp = client.get("/api/demo-budget")
+    body = resp.json()
+    assert body["chat"]["remaining"] == 12
+    assert body["embed"]["remaining"] == 40

@@ -27,6 +27,11 @@
     return;
   }
   var theme = script.getAttribute('data-theme') || 'auto'; // light | dark | auto
+  // Portal-only (spec E8 Req 3 step 4, the wizard's live preview): a base64url
+  // llmConfig handoff — see widget/src/lib/llmConfig.ts's design note on why
+  // this can't just be shared localStorage (portal and widget are different
+  // origins). Real third-party embeds never set this attribute.
+  var llmConfig = script.getAttribute('data-llm-config');
 
   var scriptUrl = new URL(script.src, window.location.href);
   var baseUrl = scriptUrl.href.slice(0, scriptUrl.href.lastIndexOf('/'));
@@ -38,6 +43,9 @@
     encodeURIComponent(key) +
     '&theme=' +
     encodeURIComponent(theme);
+  if (llmConfig) {
+    iframeSrc += '&llmConfig=' + encodeURIComponent(llmConfig);
+  }
 
   var iframe = document.createElement('iframe');
   iframe.src = iframeSrc;

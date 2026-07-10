@@ -15,6 +15,7 @@ test covers this file too).
 
 from __future__ import annotations
 
+import datetime
 import logging
 import time
 from typing import Literal
@@ -24,7 +25,8 @@ from pydantic import BaseModel
 
 from backend.llm import catalog, factory
 from backend.llm.runconfig import Selection
-from backend.services import embed_signature
+from backend.services import demo_budget, embed_signature
+from backend.utils.config import get_settings
 
 router = APIRouter()
 _log = logging.getLogger("helpflow.api.models")
@@ -53,6 +55,31 @@ def _classify(exc: Exception) -> str:
 @router.get("/api/models")
 async def get_models() -> dict:
     return catalog.catalog_payload()
+
+
+@router.get("/api/demo-budget")
+async def get_demo_budget() -> dict:
+    """DESIGN CHOICE (flagged, spec E8 Req 4): no route exposed
+    `services/demo_budget.remaining_today` before E8 — it existed since E4
+    as a "best-effort UI helper" (its own docstring) with nothing calling it
+    yet, since E4 was backend-only. Model Studio's demo-mode card needs it
+    ("today's remaining shared budget"); this wires the existing helper to
+    an endpoint rather than inventing new budget-tracking logic."""
+    settings = get_settings()
+    tomorrow = (datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    return {
+        "chat": {
+            "remaining": await demo_budget.remaining_today("chat"),
+            "cap": settings.DEMO_CHAT_DAILY,
+        },
+        "embed": {
+            "remaining": await demo_budget.remaining_today("embed"),
+            "cap": settings.DEMO_EMBED_DAILY,
+        },
+        "resets_at": tomorrow.isoformat(),
+    }
 
 
 @router.post("/api/models/validate")
