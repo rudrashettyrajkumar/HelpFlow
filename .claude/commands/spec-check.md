@@ -27,11 +27,14 @@ workflow JSON + snippets. Verify accordingly. Do this strictly:
      conversation load and there is no path around it.
    - Guarded transitions: every conversation/escalation status UPDATE has `AND status='<expected>'`;
      one owner per transition (WF-H writes no status; WF-O owns `abandoned`; console owns claim/resolve).
-   - No hardcoded model ids / limits / thresholds / tokens in code or nodes; no secrets in the repo.
+   - No hardcoded model ids / limits / thresholds / tokens in code or nodes (the ONE allowed
+     registry is `backend/llm/catalog.py`); no secrets in the repo; BYOK keys parsed only in
+     `backend/llm/runconfig.py`, never logged/stored/echoed.
 5. **n8n source-of-truth sync** (for n8n epics): every Code node opens `// source:
    snippets/<file>.js` and its body matches that snippet; mismatch = FAIL (the check-sync invariant).
-6. **SSE contract**: for E3/E5, confirm the event shapes (`token`/`seq`, `sources`, `handoff`,
-   `human_turn`, `done`, `error`; subscribe: `message`, `status`) match between backend and widget.
+6. **SSE contract**: for E3/E4/E7, confirm the event shapes (`token`/`seq`, `sources`, `handoff`,
+   `human_turn`, `done`, `error`, additive v2 `notice` (`code`, `message`, `links[]`);
+   subscribe: `message`, `status`) match between backend and widget — existing shapes frozen.
 7. Where the spec's verification names a live check (a run transcript, a SQL assertion, a curl,
    a token-grep, a psql assertion), confirm the developer pasted it in the session summary. If
    missing, mark that item ⚠️ and say what to run.

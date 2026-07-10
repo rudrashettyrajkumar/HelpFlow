@@ -37,16 +37,21 @@ Payload:    tenant_id (keyword, indexed)  ← MANDATORY filter on EVERY search
   oversized paragraphs. Track `source_url`/`page_title`/`chunk_index` through splits and
   overlaps. Golden-test it — it's the most bug-prone code. Constants live in config.
 
-## Embeddings (ported)
-- `gemini-embedding-001` @ 768, batches of 100. Failed batch retries once then aborts the
-  crawl cleanly (SSE error) and deletes points already upserted for that crawl. Async
-  semaphore respected. Query embeds: all rewritten queries in ONE batched call.
+## Embeddings (v2: BYOK via the LangChain factory)
+- Embeds go through `llm/factory.py` (provider from runconfig headers or the demo env
+  model `openrouter/nvidia/llama-nemotron-embed-vl-1b-v2:free`), ALL pinned to **768
+  dims** (Matryoshka). Batches of 100; a failed batch retries once then aborts the crawl
+  cleanly (SSE error) and deletes points already upserted for that crawl. Query embeds:
+  all rewritten queries in ONE batched call, ALWAYS with the tenant's PINNED model.
+- **One embedding space per tenant**: first ingest pins `hf:embedsig:{tenant}`
+  ({provider, model, dims}); a mismatched later crawl → 409 `embed_mismatch`; deleting
+  the last source releases the pin (`services/embed_signature.py`).
 
 ## Retrieval + RRF + the escalation threshold
 - Multi-query (1–3 rewritten queries) → one batched embed → parallel filtered searches top-8
   → `reciprocal_rank_fusion(k=60)` (ported verbatim from DocChat `utils/rrf.py`) → dedup →
-  top 6. Label each `[n] {page_title} — {source_url}`. No cross-encoder reranker (RRF over
-  multi-query captures the recall benefit at zero latency/cost — same call as DocChat).
+  (v2) FlashRank rerank (`llm/reranker.py`, ~4MB ONNX, degrades to no-op if absent) →
+  top 6. Label each `[n] {page_title} — {source_url}`.
 - **`low_relevance = best raw cosine < RELEVANCE_THRESHOLD` (env, default 0.30).** This flag
   is NOT just for the prompt — it feeds `escalation.py`: low relevance means the docs don't
   cover the question, so **escalate to a human instead of answering**. Calibrate the threshold

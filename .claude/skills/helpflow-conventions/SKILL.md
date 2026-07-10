@@ -26,7 +26,11 @@ except Exception:
 ```
 - The customer always receives a valid SSE event; no path raises out of the pipeline or hangs
   past its timeout. Partial failure → proceed with what succeeded (one search fails → use the rest).
-- Never retry-loop manually around LiteLLM — the Router owns retries/failover.
+- Never retry-loop manually around the LLM layer — `llm/gateway.py` owns retries and the
+  demo-mode failover chain (v2: LangChain factory + gateway replaced LiteLLM). BYOK
+  requests deliberately have NO fallback — never silently substitute a user's model.
+- BYOK keys arrive via `X-LLM-*`/`X-Embed-*` headers, parsed ONLY in `llm/runconfig.py` —
+  never log/store/echo a key anywhere.
 - **n8n being down must not break a chat.** Firing `/webhook/handoff` is fire-and-forget with
   a timeout; a failure is logged, the conversation still becomes `needs_human`, the customer
   still sees the warm handoff message.
@@ -58,8 +62,9 @@ except Exception:
 - Event framing with `seq` ids, 15s heartbeat, `Last-Event-ID` reconnect support, and
   `guard_stream` output rail (cut the stream if internal markers like `[CONTEXT]` leak).
 - Frozen event vocabulary the widget binds to: `token`/`seq`, `sources`, `handoff` (with
-  `reason`), `human_turn`, `done`, `error`; on `/chat/subscribe`: `message`, `status`.
-  Changing a shape is a breaking change — coordinate with E5.
+  `reason`), `human_turn`, `done`, `error`, and (v2, additive) `notice` (`code:
+  demo_exhausted|embed_mismatch|key_invalid`, `message`, `links[]`); on `/chat/subscribe`:
+  `message`, `status`. Changing an existing shape is a breaking change — coordinate with E7.
 
 ## Testing
 - `backend/tests/` mirrors module paths; all external services mocked via `conftest.py` —
