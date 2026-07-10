@@ -10,6 +10,7 @@ from pathlib import Path
 _SQL_DIR = Path(__file__).resolve().parents[2] / "sql"
 _SCHEMA = (_SQL_DIR / "001_schema.sql").read_text(encoding="utf-8")
 _VIEWS = (_SQL_DIR / "002_views_rls.sql").read_text(encoding="utf-8")
+_USERS_TRIALS = (_SQL_DIR / "003_users_trials.sql").read_text(encoding="utf-8")
 
 
 def _norm(sql: str) -> str:
@@ -69,3 +70,44 @@ def test_email_mask_function_present():
     norm = _norm(_VIEWS)
     assert "function mask_email" in norm
     assert "mask_email(c.customer_email)" in norm
+
+
+# --------------------------------------------------------- 003_users_trials (E5)
+
+
+def test_003_is_additive_only_and_never_touches_001_or_002():
+    # The FROZEN files themselves are untouched (git diff proves this on
+    # review); this test guards the intent — 003 must not DROP/ALTER-away
+    # anything the frozen files define.
+    norm = _norm(_USERS_TRIALS)
+    assert "drop table" not in norm
+    assert "drop column" not in norm
+
+
+def test_users_and_premium_leads_tables_present():
+    norm = _norm(_USERS_TRIALS)
+    assert "create table if not exists users" in norm
+    assert "create table if not exists premium_leads" in norm
+
+
+def test_users_email_is_citext_unique():
+    norm = _norm(_USERS_TRIALS)
+    assert "email         citext unique not null" in norm or "email citext unique not null" in norm
+
+
+def test_premium_leads_source_check():
+    norm = _norm(_USERS_TRIALS)
+    assert "check (source in ('gate', 'landing'))" in norm
+
+
+def test_tenants_gains_owner_and_plan_columns():
+    norm = _norm(_USERS_TRIALS)
+    assert "add column if not exists owner_user_id uuid references users(id)" in norm
+    assert "check (plan in ('demo', 'trial', 'premium'))" in norm
+
+
+def test_rls_enabled_on_users_and_premium_leads_with_no_anon_grant():
+    norm = _norm(_USERS_TRIALS)
+    assert "alter table users enable row level security" in norm
+    assert "alter table premium_leads enable row level security" in norm
+    assert "revoke all on users, premium_leads from anon" in norm

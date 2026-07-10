@@ -58,7 +58,7 @@ def test_unknown_tenant_is_404(client):
 
 
 def test_tenant_rate_limited_is_429(client):
-    async def _reject(tenant_id):
+    async def _reject(tenant_id, plan=None):
         raise RateLimitExceeded("daily limit reached")
 
     with (

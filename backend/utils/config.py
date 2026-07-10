@@ -32,6 +32,7 @@ REQUIRED_IN_PROD: tuple[str, ...] = (
     "UPSTASH_TOKEN",
     "ADMIN_TOKEN",
     "HANDOFF_TOKEN",
+    "JWT_SECRET",
 )
 
 
@@ -101,6 +102,31 @@ class Settings(BaseSettings):
     # Where the brain POSTs the handoff webhook (n8n WF-H). Optional at boot; a
     # missing url degrades the escalate path to "logged, not notified" (E4).
     N8N_HANDOFF_URL: str | None = None
+
+    # --- Accounts / JWT (E5, ARCHITECTURE §7.1) ---------------------------
+    # HS256 signing key for our OWN JWT (never a third-party auth provider).
+    JWT_SECRET: str | None = None
+    JWT_TTL_DAYS: int = 7
+
+    # --- Premium gate (E5, ARCHITECTURE §3.0/§5.3/§7.2) -------------------
+    # Raj's contact links on the 403 gate payload — env, never hardcoded
+    # (invariant #8). LEAD_TOKEN is the X-Lead-Token shared with n8n WF-P
+    # (E6); N8N_PREMIUM_LEAD_URL follows N8N_HANDOFF_URL's degrade pattern —
+    # optional at boot, a missing url just skips the best-effort notify (the
+    # premium_leads row is the source of truth either way).
+    RAJ_LINKEDIN_URL: str | None = None
+    RAJ_WHATSAPP_URL: str | None = None
+    RAJ_EMAIL: str | None = None
+    LEAD_TOKEN: str | None = None
+    N8N_PREMIUM_LEAD_URL: str | None = None
+    PREMIUM_CONTACT_DAILY_PER_IP: int = 3
+
+    # --- Trial caps (E5, ARCHITECTURE §5.3) -------------------------------
+    # plan='trial' workspaces clamp to these; plan='premium' (and the seeded
+    # plan='demo' tenant) use the v1 limits above (MAX_PAGES / RATE_MESSAGES_
+    # PER_TENANT_DAY) unclamped.
+    MAX_TRIAL_PAGES: int = 25
+    TRIAL_MESSAGES_DAILY: int = 40
 
     # --- Tunables (ARCHITECTURE §4/§7/§9) --------------------------------
     MAX_CONCURRENT_LLM_CALLS: int = 8
