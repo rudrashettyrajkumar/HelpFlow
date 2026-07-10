@@ -1,0 +1,17 @@
+[
+  {"id": 1, "question": "how do I start the python interactive interpreter", "expected_source_url_substring": "interpreter.html"},
+  {"id": 2, "question": "what is a list comprehension in python", "expected_source_url_substring": "datastructures.html"},
+  {"id": 3, "question": "how do for loops work over a sequence in python", "expected_source_url_substring": "controlflow.html"},
+  {"id": 4, "question": "how do I define a function with default argument values", "expected_source_url_substring": "controlflow.html"},
+  {"id": 5, "question": "how do I import a module in python", "expected_source_url_substring": "modules.html"},
+  {"id": 6, "question": "how do I read and write files in python", "expected_source_url_substring": "inputoutput.html"},
+  {"id": 7, "question": "how does exception handling with try/except work in python", "expected_source_url_substring": "errors.html"},
+  {"id": 8, "question": "how do I define a class and inheritance in python", "expected_source_url_substring": "classes.html"},
+  {"id": 9, "question": "what data types does python support, like numbers and strings", "expected_source_url_substring": "introduction.html"},
+  {"id": 10, "question": "what standard library modules are commonly used in python", "expected_source_url_substring": "stdlib"},
+  {"id": 11, "question": "how do I create and use a virtual environment for python", "expected_source_url_substring": "venv.html"},
+  {"id": 12, "question": "what are tuples and sets in python", "expected_source_url_substring": "datastructures.html"},
+  {"id": 13, "question": "how does python represent floating point numbers internally", "expected_source_url_substring": "floatingpoint.html"},
+  {"id": 14, "question": "what should I read next after finishing the python tutorial", "expected_source_url_substring": "whatnow.html"},
+  {"id": 15, "question": "what is your refund policy for a delayed pizza delivery order", "expected_source_url_substring": null}
+]
