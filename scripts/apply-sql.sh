@@ -23,10 +23,12 @@ run() {
 
 run 001_schema.sql
 run 002_views_rls.sql
+run 003_users_trials.sql
 
 if [[ "${1:-}" == "--assert" ]]; then
   echo "== running assertions =="
   psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -f "$SQL_DIR/assert_schema.sql"
+  psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -f "$SQL_DIR/assert_users_trials.sql"
 fi
 
 echo "== done =="

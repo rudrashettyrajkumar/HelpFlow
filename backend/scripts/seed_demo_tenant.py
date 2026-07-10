@@ -26,8 +26,11 @@ async def _get_or_create_tenant(name: str, website_url: str) -> str:
     row = await supabase_client.fetchrow("SELECT id FROM tenants WHERE name = $1", name)
     if row is not None:
         return str(row["id"])
+    # plan='demo' explicitly (E5, ARCHITECTURE §5.2): this tenant has no
+    # owner_user_id, so the column DEFAULT ('trial') would mislabel it as a
+    # customer's trial workspace rather than Raj's own seeded demo.
     row = await supabase_client.fetchrow(
-        "INSERT INTO tenants (name, website_url) VALUES ($1, $2) RETURNING id",
+        "INSERT INTO tenants (name, website_url, plan) VALUES ($1, $2, 'demo') RETURNING id",
         name,
         website_url,
     )

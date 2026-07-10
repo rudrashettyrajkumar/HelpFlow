@@ -82,20 +82,28 @@ async def increment_conversation_message_count(conversation_id: str) -> None:
         _log.warning("conversation message count increment failed", extra={"error": str(exc)})
 
 
-async def check_tenant_message_limit(tenant_id: str) -> None:
-    """E3 stub: GET-only pre-check for the tenant's daily message cap."""
+def _tenant_daily_cap(plan: str | None) -> int:
+    """plan='trial' clamps to `TRIAL_MESSAGES_DAILY`; 'premium' and the
+    seeded 'demo' tenant (and any caller that doesn't know the plan yet —
+    the E3-era stub callers) keep the v1 limit (spec E5 Req 4, §5.3)."""
     settings = get_settings()
+    if plan == "trial":
+        return settings.TRIAL_MESSAGES_DAILY
+    return settings.RATE_MESSAGES_PER_TENANT_DAY
+
+
+async def check_tenant_message_limit(tenant_id: str, plan: str | None = None) -> None:
+    """GET-only pre-check for the tenant's daily message cap (spec E3 Req;
+    plan-aware clamp added E5 Req 4)."""
+    cap = _tenant_daily_cap(plan)
     try:
         raw = await get_redis().get(hf_key("msgs", "tenant", tenant_id))
     except Exception as exc:  # noqa: BLE001 — a Redis outage must not break chat
         _log.warning("tenant rate check failed; allowing", extra={"error": str(exc)})
         return
     count = int(raw) if raw else 0
-    if count >= settings.RATE_MESSAGES_PER_TENANT_DAY:
-        raise RateLimitExceeded(
-            f"This tenant has reached today's message limit "
-            f"({settings.RATE_MESSAGES_PER_TENANT_DAY}/day)."
-        )
+    if count >= cap:
+        raise RateLimitExceeded(f"This tenant has reached today's message limit ({cap}/day).")
 
 
 async def increment_tenant_message_count(tenant_id: str) -> None:
