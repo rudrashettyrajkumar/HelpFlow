@@ -110,7 +110,7 @@ async def test_guardrail_blocked_message_never_reaches_the_llm_and_is_not_stored
 
     assert events[0]["event"] == "token"
     assert events[1] == {"event": "sources", "data": {"sources": []}}
-    assert events[2] == {"event": "done", "data": {}}
+    assert events[2] == {"event": "done", "data": {"conversation_id": str(conversation["id"])}}
     assert assert_no_llm_calls.call_count == 0
     insert_message.assert_not_called()  # invariant #3: blocked messages are never stored
 
@@ -152,7 +152,7 @@ async def test_no_sources_path_never_calls_retrieval_or_answer_llm():
 
     assert events[0]["event"] == "token"
     assert events[1] == {"event": "sources", "data": {"sources": []}}
-    assert events[2] == {"event": "done", "data": {}}
+    assert events[2] == {"event": "done", "data": {"conversation_id": str(conversation["id"])}}
     # the rewrite call happened (it's not the guardrail/human_assigned path), but
     # neither retrieval nor the answerer were ever reached — the tenant has 0 docs.
     retrieve_mock.assert_not_called()
@@ -199,7 +199,7 @@ async def test_explicit_human_request_escalates_and_notifies_handoff():
     assert events[0]["event"] == "token"
     handoff_events = [e for e in events if e["event"] == "handoff"]
     assert handoff_events == [{"event": "handoff", "data": {"reason": "user_requested"}}]
-    assert events[-1] == {"event": "done", "data": {}}
+    assert events[-1] == {"event": "done", "data": {"conversation_id": str(conversation["id"])}}
     guarded.assert_awaited_once()
     insert_escalation.assert_awaited_once_with(str(conversation["id"]), "user_requested")
     notify.assert_awaited_once_with(
@@ -304,7 +304,7 @@ async def test_normal_question_streams_a_cited_answer_and_persists():
     )
     sources_event = next(e for e in events if e["event"] == "sources")
     assert sources_event["data"]["sources"][0]["cited"] is True
-    assert events[-1] == {"event": "done", "data": {}}
+    assert events[-1] == {"event": "done", "data": {"conversation_id": str(conversation["id"])}}
     assert insert_message.await_count == 2
     update_streak.assert_awaited_once_with(str(conversation["id"]), 0)
 
