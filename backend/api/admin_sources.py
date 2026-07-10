@@ -16,7 +16,7 @@ import logging
 from collections.abc import AsyncIterator
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -26,14 +26,46 @@ from backend.ingestion.ingest_service import (
     run_ingestion,
     run_refresh,
 )
+from backend.llm.runconfig import BYOKError, RunConfig, from_headers
 from backend.middleware.rate_limit import check_and_increment_tenant_crawl
 from backend.middleware.tenant_auth import require_admin_tenant
+from backend.services import embed_signature
 from backend.utils import supabase_client
 from backend.utils.config import get_settings
 from backend.utils.sse import format_event
 
 router = APIRouter()
 _log = logging.getLogger("helpflow.api.admin_sources")
+
+
+def _parse_cfg(request: Request) -> RunConfig:
+    """The request's BYOK embed selection (spec E4 Req 3/7) — rejected as 422
+    before any crawl work, same validation-before-streaming split as the rest
+    of this module."""
+    try:
+        return from_headers(request.headers)
+    except BYOKError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+
+
+async def _check_embed_pin(tenant_id: str, cfg: RunConfig) -> None:
+    """409 `embed_mismatch` BEFORE any streaming (spec E4 Req 7, ARCHITECTURE
+    §4.5): a tenant's whole corpus lives in ONE embedding space — a crawl
+    asking for a different provider/model than the existing pin must be
+    rejected up front, not half-ingested into a second space."""
+    existing = await embed_signature.get_pin(tenant_id)
+    if existing is None:
+        return
+    requested = embed_signature.signature(embed_signature.request_selection(cfg))
+    if existing != requested:
+        raise IngestValidationError(
+            "embed_mismatch",
+            f"This workspace's knowledge base was built with {existing!r}; "
+            f"{requested!r} would start a second, incompatible space. "
+            "Re-crawl from scratch to switch embedding models, or select "
+            f"{existing!r} in Model Studio.",
+            status_code=409,
+        )
 
 
 class CreateSourceRequest(BaseModel):
@@ -68,10 +100,15 @@ def _validate_create(body: CreateSourceRequest) -> None:
 
 
 async def _stream_ingestion(
-    *, tenant_id: str, url: str | None, sitemap_url: str | None, max_pages: int | None
+    *,
+    tenant_id: str,
+    url: str | None,
+    sitemap_url: str | None,
+    max_pages: int | None,
+    cfg: RunConfig,
 ) -> AsyncIterator[str]:
     async for event in run_ingestion(
-        tenant_id=tenant_id, url=url, sitemap_url=sitemap_url, max_pages=max_pages
+        tenant_id=tenant_id, url=url, sitemap_url=sitemap_url, max_pages=max_pages, cfg=cfg
     ):
         yield format_event("progress", event)
 
@@ -79,11 +116,14 @@ async def _stream_ingestion(
 @router.post("/admin/sources", response_model=None)
 async def create_source(
     body: CreateSourceRequest,
+    request: Request,
     tenant_id: str = Depends(require_admin_tenant),
 ) -> StreamingResponse | JSONResponse:
+    cfg = _parse_cfg(request)
     try:
         _validate_create(body)
         await check_and_increment_tenant_crawl(tenant_id)
+        await _check_embed_pin(tenant_id, cfg)
     except IngestValidationError as exc:
         return JSONResponse(
             status_code=exc.status_code, content={"error": exc.error, "detail": exc.detail}
@@ -95,6 +135,7 @@ async def create_source(
             url=body.url,
             sitemap_url=body.sitemap_url,
             max_pages=body.max_pages,
+            cfg=cfg,
         ),
         media_type="text/event-stream",
     )
@@ -147,4 +188,7 @@ async def delete_source(
     source = await _load_owned_source(source_id, tenant_id)
     await delete_source_points(get_settings().QDRANT_COLLECTION, [source["id"]])
     await supabase_client.execute("DELETE FROM sources WHERE id = $1", source["id"])
+    # Releases the tenant's embed-space pin once they have no `ready` sources
+    # left (spec E4 Req 7, ARCHITECTURE §4.5) — best-effort, never blocks the delete.
+    await embed_signature.release_if_empty(tenant_id)
     return {"deleted": True}

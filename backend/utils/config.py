@@ -49,21 +49,28 @@ class Settings(BaseSettings):
     # ("*") but overridable per deploy.
     FRONTEND_ORIGIN: str = "*"
 
-    # --- Models (migrate by changing env alone; never touch agent code) --
-    # Gemini models served VIA OpenRouter (one gateway, one key); Groq is the
-    # diverse failover (ARCHITECTURE §4). The key for each model is derived from
-    # its provider prefix (llm_router._key_for), so a per-model migration stays a
-    # one-line env change.
-    ROUTER_MODEL: str = "openrouter/google/gemini-3.1-flash-lite-preview"
-    ANSWER_MODEL: str = "openrouter/google/gemini-3-flash-preview"
-    EMBED_MODEL: str = "openrouter/google/gemini-embedding-001"
+    # --- Demo-mode models (v2, spec E4 Req 9 — migrate by env alone; never
+    # touch agent code). Free-tier open-source ONLY (ARCHITECTURE §4.3):
+    # Groq's Llama 3.3 70B primary for both roles, OpenRouter's NVIDIA
+    # Nemotron 3 Super the diverse fallback (`llm/factory.py:demo_chain`).
+    # BYOK requests ignore these entirely (`llm/runconfig.py`).
+    DEMO_REWRITER_MODEL: str = "groq/llama-3.3-70b-versatile"
+    DEMO_ANSWERER_MODEL: str = "groq/llama-3.3-70b-versatile"
+    DEMO_EMBED_MODEL: str = "openrouter/nvidia/llama-nemotron-embed-vl-1b-v2:free"
 
-    # --- Provider credentials -------------------------------------------
-    OPENROUTER_API_KEY: str | None = None  # primary gateway (all LLM + embeddings)
-    GROQ_API_KEY: str | None = None  # failover provider
-    # Optional: only used if a *_MODEL id is pointed at a bare gemini/* id
-    # (Gemini-direct). Not required — the stack runs entirely through OpenRouter.
-    GEMINI_API_KEY: str | None = None
+    # --- Provider credentials (demo mode only; BYOK keys arrive per-request) --
+    OPENROUTER_API_KEY: str | None = None  # primary gateway (chat + embeddings)
+    GROQ_API_KEY: str | None = None  # diverse failover provider
+    GEMINI_API_KEY: str | None = None  # optional: not used by demo mode (Groq/OpenRouter only)
+
+    # --- Demo-mode shared daily budget (Upstash `hf:demo:{yyyymmdd}:*`, spec E4
+    # Req 6) — checked BEFORE every demo-mode provider call; BYOK never counts
+    # against these.
+    DEMO_CHAT_DAILY: int = 150
+    DEMO_EMBED_DAILY: int = 100
+
+    # --- FlashRank cross-encoder rerank (spec E4 Req 1, ~4MB ONNX, CPU) -------
+    RERANK_ENABLED: bool = True
 
     # --- Vectors (Qdrant) -----------------------------------------------
     QDRANT_URL: str | None = None

@@ -28,7 +28,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ValidationError, field_validator
 
-from backend.utils import llm_router
+from backend.llm import gateway
+from backend.llm.runconfig import DEFAULT, RunConfig
 
 _log = logging.getLogger("helpflow.rewrite_agent")
 
@@ -88,20 +89,21 @@ async def rewrite(
     history: list[dict[str, Any]] | None = None,
     tenant_name: str = "the business",
     sensitive_intents: frozenset[str] = frozenset(),
+    cfg: RunConfig = DEFAULT,
 ) -> Rewrite:
     """Turn one customer turn into a validated `Rewrite` (never raises).
 
     `history` is recent turns (oldest-first, dicts with `role`/`content`); only the
     last 6 are shown to the model. `sensitive_intents` is the tenant's (or global
     default) always-escalate intent set — enforced here even if the model's `route`
-    disagrees. Any failure -> the safe default, logged with its reason.
+    disagrees. `cfg` is the request's BYOK selection (demo mode by default). Any
+    failure -> the safe default, logged with its reason (including a demo-mode
+    budget exhaustion here — the answer step will hit the same exhausted chat
+    budget and is what actually surfaces the `notice` event to the customer).
     """
     messages = _build_messages(message, history or [], tenant_name)
     try:
-        response = await llm_router.complete(
-            "rewrite", messages, response_format={"type": "json_object"}
-        )
-        text = response.choices[0].message.content
+        text = await gateway.complete("rewrite", messages, cfg, json_mode=True)
     except Exception as exc:  # noqa: BLE001 — boundary: any LLM/timeout failure degrades
         return _default_rewrite(message, f"llm_call_failed: {exc!r}")
     try:

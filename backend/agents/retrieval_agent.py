@@ -24,8 +24,10 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from backend.llm.runconfig import DEFAULT, RunConfig
+from backend.services import embed_signature
+from backend.services.embed_signature import EmbeddingError, embed
 from backend.utils.config import get_settings
-from backend.utils.embeddings import EmbeddingError, embed
 from backend.utils.qdrant_client import get_qdrant
 from backend.utils.rrf import reciprocal_rank_fusion
 
@@ -118,17 +120,27 @@ def _to_chunk(point: Any, n: int) -> RetrievedChunk:
     )
 
 
-async def retrieve(queries: list[str], tenant_id: str) -> RetrievalResult:
-    """Embed `queries`, search Qdrant filtered to `tenant_id`, fuse, and label.
+async def retrieve(
+    queries: list[str], tenant_id: str, cfg: RunConfig = DEFAULT
+) -> RetrievalResult:
+    """Embed `queries` in the tenant's PINNED embedding space, search Qdrant
+    filtered to `tenant_id`, fuse, and label.
 
-    Never raises: any failure degrades to `RetrievalResult([], low_relevance=True)`.
+    Never raises `EmbeddingError`: that failure degrades to
+    `RetrievalResult([], low_relevance=True)`. `demo_budget.DemoBudgetExceeded`
+    (demo-mode shared budget exhausted) is NOT caught here — it propagates to
+    the caller (the graph's `retrieve_node`), which turns it into the
+    `notice` SSE event rather than a silent degrade (spec E4 Req 6).
     """
     if not queries:
         return _EMPTY_RESULT
 
     settings = get_settings()
+    selection = await embed_signature.query_selection(tenant_id, cfg)
     try:
-        vectors = await embed(queries)
+        vectors = await embed(
+            queries, selection, is_demo=embed_signature.is_demo_embed(cfg)
+        )
     except EmbeddingError as exc:
         _log.warning("query embedding failed; degrading", extra={"error": str(exc)})
         return _EMPTY_RESULT

@@ -1,20 +1,27 @@
-"""Chat pipeline — the async orchestrator (ARCHITECTURE §3.2, spec E3 Req 1-10).
+"""Chat pipeline — the async orchestrator (ARCHITECTURE §3.2, spec E3 Req 1-10;
+retrofitted to the v2 model layer by spec E4 Req 5).
 
-The pipeline order is LAW: conversation load (done by the caller, `api/chat.py`,
-before rate-limit checks) → human_assigned guard → guardrail → route/rewrite →
-retrieve (route=retrieve only) → escalation decision → answer OR escalate → persist.
-Two deterministic early exits before any answer: the `human_assigned` guard
-(invariant #5 — the AI must NEVER answer a human-assigned conversation) and the
-guardrail (invariant #3). Both run before any LLM call — tested with
-`assert_no_llm_calls`.
+The pipeline order is LAW and UNCHANGED since E3: conversation load (done by the
+caller, `api/chat.py`, before rate-limit checks) → human_assigned guard →
+guardrail → route/rewrite → retrieve (route=retrieve only) → escalation decision
+→ answer OR escalate → persist. `prepare_turn()` now makes every one of those
+decisions by invoking `graph/support_graph.py` (a thin wrapper, per spec E4 Req 5)
+instead of running them inline — the decisions themselves, their order, and the
+escalation truth table are byte-identical to E3.
 
-`prepare_turn()` makes every decision (never streams, never persists); `_run_turn()`
-is the single core that streams the answer AND schedules every persistence side
-effect as a `BackgroundTasks` job (never blocks the response). `run_chat_stream()`
-and `run_chat_once()` are thin adapters over the SAME `_run_turn()` core — one for
+`prepare_turn()` never streams, never persists; `_run_turn()` is the single core
+that streams the answer AND schedules every persistence side effect as a
+`BackgroundTasks` job (never blocks the response). `run_chat_stream()` and
+`run_chat_once()` are thin adapters over the SAME `_run_turn()` core — one for
 `POST /chat/stream` (SSE), one for `POST /chat` (n8n/WhatsApp's non-streaming
-sibling) — so the escalation truth table and persistence logic exist in exactly one
-place, never duplicated between the two endpoints.
+sibling) — so the escalation truth table and persistence logic exist in exactly
+one place, never duplicated between the two endpoints.
+
+New in E4: every entry point takes an optional `cfg: RunConfig` (BYOK selection
+parsed by `api/chat.py` from the request's `X-LLM-*`/`X-Embed-*` headers;
+defaults to demo mode) and the pipeline emits ONE additive SSE event, `notice`
+(demo_exhausted | embed_mismatch | key_invalid) — the existing `token`/`sources`/
+`handoff`/`human_turn`/`done`/`error` shapes are byte-compatible with E3.
 """
 
 from __future__ import annotations
@@ -28,17 +35,30 @@ from typing import Any
 import httpx
 from fastapi import BackgroundTasks
 
-from backend.agents import answer_agent, escalation, rewrite_agent
-from backend.agents.retrieval_agent import RetrievedChunk, retrieve
+from backend.agents import answer_agent
+from backend.agents.retrieval_agent import RetrievedChunk
 from backend.channels import conversation_store
+from backend.graph import support_graph
+from backend.llm.gateway import LLMUnavailable
+from backend.llm.runconfig import DEFAULT, RunConfig
+from backend.services.demo_budget import DemoBudgetExceeded
 from backend.utils.config import get_settings
-from backend.utils.guardrails import check_input, deflection
 from backend.utils.sse import PING, format_event, format_token, with_heartbeat
 
 _log = logging.getLogger("helpflow.chat_pipeline")
 
 _PROMPTS_DIR = Path(__file__).resolve().parents[1] / "prompts"
 _FRIENDLY_STREAM_ERROR = "Something went wrong while generating the answer. Please try again."
+
+_NOTICE_LINKS: dict[str, list[dict[str, str]]] = {
+    "demo_exhausted": [
+        {"label": "Get a Groq key", "url": "https://console.groq.com/keys"},
+        {"label": "Get an OpenRouter key", "url": "https://openrouter.ai/settings/keys"},
+        {"label": "Open Model Studio", "url": "/model-studio"},
+    ],
+    "key_invalid": [{"label": "Open Model Studio", "url": "/model-studio"}],
+    "embed_mismatch": [{"label": "Open Model Studio", "url": "/model-studio"}],
+}
 
 
 # --------------------------------------------------------------------------- decision
@@ -48,7 +68,7 @@ _FRIENDLY_STREAM_ERROR = "Something went wrong while generating the answer. Plea
 class TurnContext:
     """Everything `_run_turn` needs — the output of every pre-answer decision."""
 
-    kind: str  # "human_turn" | "guardrail" | "no_sources" | "answer" | "escalate"
+    kind: str  # "human_turn"|"guardrail"|"no_sources"|"notice"|"answer"|"escalate"
     conversation: dict[str, Any]
     history: list[dict[str, Any]] = field(default_factory=list)
     canned_text: str | None = None
@@ -57,78 +77,42 @@ class TurnContext:
     route: str | None = None
     reason: str | None = None
     new_streak: int = 0
+    notice_code: str | None = None
 
 
-def _sensitive_intents(tenant: dict[str, Any]) -> frozenset[str]:
-    """Per-tenant override (`tenants.sensitive_intents`) if set, else the env default."""
-    per_tenant = tenant.get("sensitive_intents") or []
-    if per_tenant:
-        return frozenset(s.lower() for s in per_tenant)
-    return get_settings().sensitive_intents
+def _state_to_context(state: support_graph.SupportState) -> TurnContext:
+    """Adapt the graph's final state into the `TurnContext` `_run_turn` consumes."""
+    return TurnContext(
+        kind=state.get("kind", "answer"),
+        conversation=state["conversation"],
+        history=state.get("history", []),
+        canned_text=state.get("canned_text"),
+        chunks=state.get("chunks", []),
+        low_relevance=state.get("low_relevance", False),
+        route=state.get("route"),
+        reason=state.get("reason"),
+        new_streak=state.get("new_streak", 0),
+        notice_code=state.get("notice_code"),
+    )
 
 
 async def prepare_turn(
-    *, tenant: dict[str, Any], conversation: dict[str, Any], message: str
+    *,
+    tenant: dict[str, Any],
+    conversation: dict[str, Any],
+    message: str,
+    cfg: RunConfig = DEFAULT,
 ) -> TurnContext:
-    """Steps 0(guard)-4 of §3.2: every decision, zero side effects, zero streaming.
-
-    Order matters for the required tests: the human_assigned guard and the
-    guardrail check BOTH return before `rewrite_agent`/history are ever touched —
-    the only way to guarantee zero LLM-router calls on those two paths.
-    """
-    if conversation["status"] == "human_assigned":
-        return TurnContext(kind="human_turn", conversation=conversation)
-
-    if check_input(message) is not None:
-        return TurnContext(kind="guardrail", conversation=conversation, canned_text=deflection())
-
-    history = await conversation_store.recent_history(conversation["id"])
-    rw = await rewrite_agent.rewrite(
-        message,
-        history,
-        tenant_name=tenant.get("name") or "the business",
-        sensitive_intents=_sensitive_intents(tenant),
-    )
-
-    chunks: list[RetrievedChunk] = []
-    low_relevance = False
-    if rw.route == "retrieve":
-        ready = await conversation_store.count_ready_sources(str(tenant["id"]))
-        if ready == 0:
-            return TurnContext(
-                kind="no_sources", conversation=conversation, history=history, route=rw.route
-            )
-        result = await retrieve(rw.queries, str(tenant["id"]))
-        chunks = result.chunks
-        low_relevance = result.low_relevance
-
-    decision = escalation.decide(
-        route=rw.route,
-        handoff_reason=rw.handoff_reason,
-        low_relevance=low_relevance,
-        low_conf_streak=conversation["low_conf_streak"],
-    )
-
-    if decision.action == "escalate":
-        return TurnContext(
-            kind="escalate",
-            conversation=conversation,
-            history=history,
-            chunks=chunks,
-            route=rw.route,
-            reason=decision.reason,
-            new_streak=decision.new_streak,
-        )
-
-    return TurnContext(
-        kind="answer",
-        conversation=conversation,
-        history=history,
-        chunks=chunks,
-        low_relevance=low_relevance,
-        route=rw.route,
-        new_streak=decision.new_streak,
-    )
+    """Steps 0(guard)-5 of §3.2 via the LangGraph support graph — every decision,
+    zero side effects, zero streaming (spec E4 Req 5: a thin invoker)."""
+    state: support_graph.SupportState = {
+        "tenant": tenant,
+        "conversation": conversation,
+        "message": message,
+        "cfg": cfg,
+    }
+    final_state = await support_graph.prepare(state)
+    return _state_to_context(final_state)
 
 
 # --------------------------------------------------------------------------- canned text
@@ -144,6 +128,7 @@ def _load_variants(filename: str) -> tuple[str, ...]:
 
 _HANDOFF_CACHE: tuple[str, ...] | None = None
 _NO_SOURCES_CACHE: str | None = None
+_DEMO_EXHAUSTED_CACHE: str | None = None
 
 
 def _handoff_message() -> str:
@@ -162,6 +147,27 @@ def _no_sources_message() -> str:
     if _NO_SOURCES_CACHE is None:
         _NO_SOURCES_CACHE = (_PROMPTS_DIR / "no_sources.md").read_text(encoding="utf-8").strip()
     return _NO_SOURCES_CACHE
+
+
+def _demo_exhausted_message() -> str:
+    global _DEMO_EXHAUSTED_CACHE
+    if _DEMO_EXHAUSTED_CACHE is None:
+        _DEMO_EXHAUSTED_CACHE = (
+            (_PROMPTS_DIR / "demo_exhausted.md").read_text(encoding="utf-8").strip()
+        )
+    return _DEMO_EXHAUSTED_CACHE
+
+
+def _notice_payload(code: str, *, detail: str | None = None) -> dict[str, Any]:
+    """The additive `notice` SSE event body (spec E4 Req 8, ARCHITECTURE §3.2/§4.3).
+
+    Rendered as a friendly designed card by the widget/portal — never a raw
+    error. `demo_exhausted` always uses the product copy in
+    `prompts/demo_exhausted.md`; `key_invalid`/`embed_mismatch` use the
+    caller-supplied `detail` when available.
+    """
+    message = _demo_exhausted_message() if code == "demo_exhausted" else (detail or code)
+    return {"code": code, "message": message, "links": _NOTICE_LINKS.get(code, [])}
 
 
 def _tenant_tone(tenant: dict[str, Any]) -> str:
@@ -264,7 +270,11 @@ async def _persist_escalation(
 
 
 async def _run_turn(
-    ctx: TurnContext, tenant: dict[str, Any], message: str, background_tasks: BackgroundTasks
+    ctx: TurnContext,
+    tenant: dict[str, Any],
+    message: str,
+    background_tasks: BackgroundTasks,
+    cfg: RunConfig = DEFAULT,
 ) -> AsyncIterator[dict[str, Any]]:
     """Yield abstract turn events (`{"type": ...}`) — format-agnostic so both the SSE
     and non-streaming adapters can consume the exact same sequence."""
@@ -290,6 +300,13 @@ async def _run_turn(
         yield {"type": "done"}
         return
 
+    if ctx.kind == "notice":
+        # A demo-budget exhaustion caught during retrieval's query embed (spec E4
+        # Req 6) — nothing is stored, same as any other infra-availability notice.
+        yield {"type": "notice", **_notice_payload(ctx.notice_code or "demo_exhausted")}
+        yield {"type": "done"}
+        return
+
     if ctx.kind == "escalate":
         text = _handoff_message()
         yield {"type": "token", "text": text}
@@ -310,6 +327,7 @@ async def _run_turn(
             ctx.low_relevance,
             business_name=tenant.get("name") or "Our team",
             business_tone=_tenant_tone(tenant),
+            cfg=cfg,
         )
         async for token in with_heartbeat(token_stream):
             if token == PING:
@@ -317,6 +335,27 @@ async def _run_turn(
                 continue
             answer_parts.append(token)
             yield {"type": "token", "text": token}
+    except DemoBudgetExceeded:
+        # spec E4 Req 6: exhaustion (including a provider-side quota error that
+        # slipped past the pre-check) is ALWAYS the designed notice, never a
+        # raw error — nothing stored, same as the guardrail/no_sources exits.
+        _log.info("demo chat budget exhausted mid-turn", extra={"conversation_id": conversation_id})
+        yield {"type": "notice", **_notice_payload("demo_exhausted")}
+        yield {"type": "done"}
+        return
+    except LLMUnavailable as exc:
+        # A BYOK selection failed outright (bad key/model/rate-limit) — no
+        # server fallback by design (invariant #7); surfaced as a fixable
+        # notice, never a raw provider error. A demo-mode exhaustion (all
+        # deployments unavailable) maps to the same `demo_exhausted` copy.
+        code = "demo_exhausted" if cfg.chat is None else "key_invalid"
+        _log.warning(
+            "llm unavailable mid-turn",
+            extra={"conversation_id": conversation_id, "code": code},
+        )
+        yield {"type": "notice", **_notice_payload(code, detail=exc.user_detail)}
+        yield {"type": "done"}
+        return
     except Exception as exc:  # noqa: BLE001 — mid-stream failure degrades to one error event
         _log.warning("answer stream failed", extra={"error": repr(exc)})
         # A mid-stream failure stores NOTHING (neither question nor partial answer) —
@@ -344,12 +383,14 @@ async def run_chat_stream(
     conversation: dict[str, Any],
     message: str,
     background_tasks: BackgroundTasks,
+    cfg: RunConfig = DEFAULT,
 ) -> AsyncIterator[str]:
     """`POST /chat/stream` — the frozen SSE contract: token/seq, sources, handoff,
-    done, human_turn, error (spec Req 1/11)."""
-    ctx = await prepare_turn(tenant=tenant, conversation=conversation, message=message)
+    done, human_turn, error (spec E3 Req 1/11), plus the additive `notice` event
+    (spec E4 Req 8)."""
+    ctx = await prepare_turn(tenant=tenant, conversation=conversation, message=message, cfg=cfg)
     seq = 0
-    async for event in _run_turn(ctx, tenant, message, background_tasks):
+    async for event in _run_turn(ctx, tenant, message, background_tasks, cfg):
         kind = event["type"]
         if kind == "token":
             yield format_token(seq, event["text"])
@@ -362,6 +403,11 @@ async def run_chat_stream(
             yield format_event("handoff", {"reason": event["reason"]})
         elif kind == "human_turn":
             yield format_event("human_turn", {})
+        elif kind == "notice":
+            yield format_event(
+                "notice",
+                {"code": event["code"], "message": event["message"], "links": event["links"]},
+            )
         elif kind == "error":
             yield format_event("error", {"detail": event["detail"]})
         elif kind == "done":
@@ -374,17 +420,19 @@ async def run_chat_once(
     conversation: dict[str, Any],
     message: str,
     background_tasks: BackgroundTasks,
+    cfg: RunConfig = DEFAULT,
 ) -> dict[str, Any]:
     """`POST /chat` — the non-streaming sibling for n8n/WhatsApp (spec Req 10)."""
-    ctx = await prepare_turn(tenant=tenant, conversation=conversation, message=message)
+    ctx = await prepare_turn(tenant=tenant, conversation=conversation, message=message, cfg=cfg)
     reply_parts: list[str] = []
     sources: list[dict[str, Any]] = []
     escalated = False
     reason: str | None = None
+    notice: dict[str, Any] | None = None
     status = ctx.conversation["status"]
     failed = False
 
-    async for event in _run_turn(ctx, tenant, message, background_tasks):
+    async for event in _run_turn(ctx, tenant, message, background_tasks, cfg):
         kind = event["type"]
         if kind == "token":
             reply_parts.append(event["text"])
@@ -396,6 +444,8 @@ async def run_chat_once(
             status = "needs_human"
         elif kind == "human_turn":
             status = "human_assigned"
+        elif kind == "notice":
+            notice = {"code": event["code"], "message": event["message"], "links": event["links"]}
         elif kind == "error":
             failed = True
 
@@ -404,6 +454,7 @@ async def run_chat_once(
         "sources": sources,
         "escalated": escalated,
         "reason": reason,
+        "notice": notice,
         "conversation_id": str(ctx.conversation["id"]),
         "status": status,
     }
