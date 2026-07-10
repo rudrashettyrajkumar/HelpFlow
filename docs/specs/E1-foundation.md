@@ -1,5 +1,10 @@
 # SPEC E1 — Foundation: FastAPI skeleton, Supabase schema, Qdrant, n8n, clients
 
+
+> **STATUS: ✅ BUILT & MERGED (July 2026), to the v1.0 architecture.** Kept for the record.
+> ARCHITECTURE v2.0 (BYOK + LangChain/LangGraph) retrofits this epic's LLM layer in **E4**
+> and its admin/tenancy in **E5** — see ARCHITECTURE §13 for the exact disposition of each
+> module. Where this spec says LiteLLM / gemini-embedding / ADMIN_TOKEN-only, §13 wins.
 **Epic:** E1 · **Depends on:** — · **Architecture refs:** §2, §4, §5, §7, §9, §10
 
 ## Objective

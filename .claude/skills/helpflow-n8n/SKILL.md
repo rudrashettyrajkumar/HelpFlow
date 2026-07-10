@@ -12,8 +12,10 @@ OpenRouter/AI nodes in these workflows. See the boundary in ARCHITECTURE §2 and
 ## The FastAPI ↔ n8n boundary (do not blur it)
 - FastAPI decides escalations and owns `conversations`/`messages`. n8n never decides an
   escalation and never writes `human_assigned` (the console owns that).
-- WF-H (handoff): notify humans + business hours. WF-O (ops): SLA sweep + digest, owns
-  `needs_human → abandoned`. WF-W (whatsapp, E8): channel adapter, calls FastAPI `/chat`.
+- WF-H (handoff, E6): notify humans + business hours. WF-P (premium lead, E6): gate-form
+  submission → Slack/Gmail to Raj with mailto/wa.me quick-replies, idempotent by lead_id.
+  WF-O (ops, E10): SLA sweep + digest, owns `needs_human → abandoned`. WF-W (whatsapp,
+  E11): channel adapter, calls FastAPI `/chat`.
 - One owner per stage transition — respect the table in [[helpflow-schema]].
 
 ## The working loop (Claude can't click the n8n editor)
@@ -23,7 +25,7 @@ OpenRouter/AI nodes in these workflows. See the boundary in ARCHITECTURE §2 and
    Always print the exact command.
 3. Developer runs it, pastes execution results/errors back.
 4. After any editor tweak: `node scripts/export-workflows.mjs` → commit. The repo must win;
-   unexported editor changes are considered lost. `scripts/check-sync.mjs` (E7) proves no drift.
+   unexported editor changes are considered lost. `scripts/check-sync.mjs` (E10) proves no drift.
 
 ## Source-of-truth markers (never omit)
 - Every Code node text starts `// source: snippets/<file>.js` then the file contents verbatim.
@@ -47,8 +49,9 @@ OpenRouter/AI nodes in these workflows. See the boundary in ARCHITECTURE §2 and
   silent drop.
 
 ## Config & credentials
-- All tunables via `$env`: `HANDOFF_TOKEN, SLACK_CHANNEL, ONCALL_EMAIL, BUSINESS_HOURS,
-  BUSINESS_TZ, CONSOLE_BASE_URL, SLA_MINUTES, ABANDON_HOURS, FASTAPI_URL` and (E8)
+- All tunables via `$env`: `HANDOFF_TOKEN, LEAD_TOKEN, RAJ_WHATSAPP_URL, SLACK_CHANNEL,
+  ONCALL_EMAIL, BUSINESS_HOURS, BUSINESS_TZ, CONSOLE_BASE_URL, SLA_MINUTES, ABANDON_HOURS,
+  FASTAPI_URL` and (E11)
   `WA_VERIFY_TOKEN, WA_PHONE_NUMBER_ID, WA_ACCESS_TOKEN, WA_TENANT_MAP, AGENT_OUTBOUND_TOKEN`.
   A literal channel id / email / hour / url / token inside a node is a review reject.
 - Credential names are contracts: `supabase-pg`, `slack`, `gmail-alerts`, `whatsapp`.
