@@ -15,8 +15,8 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from backend.services.embed_signature import EMBED_DIM
 from backend.utils.config import get_settings
-from backend.utils.embeddings import EMBED_DIM
 from backend.utils.qdrant_client import get_qdrant
 
 _log = logging.getLogger("helpflow.create_collection")

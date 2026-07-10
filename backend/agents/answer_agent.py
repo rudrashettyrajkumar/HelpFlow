@@ -24,7 +24,8 @@ from pathlib import Path
 from typing import Any
 
 from backend.agents.retrieval_agent import RetrievedChunk
-from backend.utils import llm_router
+from backend.llm import gateway
+from backend.llm.runconfig import DEFAULT, RunConfig
 from backend.utils.guardrails import guard_stream
 
 _PROMPTS_DIR = Path(__file__).resolve().parents[1] / "prompts"
@@ -116,15 +117,18 @@ def stream_answer(
     *,
     business_name: str = "Our team",
     business_tone: str = "friendly and professional",
+    cfg: RunConfig = DEFAULT,
 ) -> AsyncIterator[str]:
     """Guarded answer token stream for the assembled prompt (spec Req 7).
 
-    Any gateway/provider failure or `GuardrailTripped` propagates to the caller.
+    Any gateway/provider failure (including a demo-mode `DemoBudgetExceeded`
+    or a BYOK `LLMUnavailable`) or `GuardrailTripped` propagates to the
+    caller — `chat_pipeline` maps each to the right SSE event.
     """
     messages = build_messages(
         chunks, history, question, low_relevance, business_name, business_tone
     )
-    return guard_stream(llm_router.stream("answer", messages))
+    return guard_stream(gateway.stream("answer", messages, cfg))
 
 
 def cited_sources(chunks: list[RetrievedChunk], answer_text: str) -> list[dict[str, object]]:

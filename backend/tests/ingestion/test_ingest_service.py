@@ -14,7 +14,7 @@ import pytest
 from backend.ingestion import ingest_service
 from backend.ingestion.chunker import Chunk
 from backend.ingestion.extractor import ExtractResult
-from backend.utils.embeddings import EmbeddingError
+from backend.services.embed_signature import EmbeddingError
 
 _TENANT_ID = str(uuid.uuid4())
 _URLS = ["https://example.com/a", "https://example.com/b"]
@@ -89,7 +89,7 @@ def _patches(*, qdrant, embed_mock, supabase_source_ids=None):
         )
         stack.enter_context(patch.object(ingest_service, "_insert_source_row", fake_insert))
         stack.enter_context(patch.object(ingest_service, "get_qdrant", return_value=qdrant))
-        stack.enter_context(patch.object(ingest_service, "embed", embed_mock))
+        stack.enter_context(patch.object(ingest_service.embed_signature, "embed", embed_mock))
         stack.enter_context(patch.object(ingest_service, "_mark_ready", AsyncMock()))
         stack.enter_context(patch.object(ingest_service, "_mark_error", AsyncMock()))
         yield url_to_source_id
@@ -97,7 +97,7 @@ def _patches(*, qdrant, embed_mock, supabase_source_ids=None):
 
 async def test_happy_path_progress_event_sequence():
     qdrant = _fake_qdrant()
-    embed_mock = AsyncMock(side_effect=lambda texts: [[0.1, 0.2] for _ in texts])
+    embed_mock = AsyncMock(side_effect=lambda texts, *a, **kw: [[0.1, 0.2] for _ in texts])
 
     with _patches(qdrant=qdrant, embed_mock=embed_mock):
         events = await _collect(ingest_service.run_ingestion(tenant_id=_TENANT_ID, url="https://example.com/"))
@@ -125,7 +125,7 @@ async def test_mid_embed_failure_rolls_back_and_emits_error():
 
     call_count = 0
 
-    async def _embed_fails_second_batch(texts):
+    async def _embed_fails_second_batch(texts, *a, **kw):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
@@ -150,7 +150,7 @@ async def test_mid_embed_failure_rolls_back_and_emits_error():
 async def test_upsert_failure_rolls_back_and_emits_error():
     qdrant = _fake_qdrant()
     qdrant.upsert = AsyncMock(side_effect=[None, RuntimeError("qdrant unavailable")])
-    embed_mock = AsyncMock(side_effect=lambda texts: [[0.1, 0.2] for _ in texts])
+    embed_mock = AsyncMock(side_effect=lambda texts, *a, **kw: [[0.1, 0.2] for _ in texts])
 
     with _patches(qdrant=qdrant, embed_mock=embed_mock):
         events = await _collect(ingest_service.run_ingestion(tenant_id=_TENANT_ID, url="https://example.com/"))
@@ -164,7 +164,7 @@ async def test_extraction_failure_on_one_page_does_not_abort_the_crawl():
     """One page fails extraction (spec Req 3: 'one failed page never aborts
     the crawl') — the other page still ingests normally."""
     qdrant = _fake_qdrant()
-    embed_mock = AsyncMock(side_effect=lambda texts: [[0.1, 0.2] for _ in texts])
+    embed_mock = AsyncMock(side_effect=lambda texts, *a, **kw: [[0.1, 0.2] for _ in texts])
 
     async def flaky_extract(url):
         if url == _URLS[0]:
@@ -185,7 +185,7 @@ async def test_extraction_failure_on_one_page_does_not_abort_the_crawl():
             AsyncMock(side_effect=lambda t, u: str(uuid.uuid4())),
         ),
         patch.object(ingest_service, "get_qdrant", return_value=qdrant),
-        patch("backend.ingestion.ingest_service.embed", embed_mock),
+        patch("backend.services.embed_signature.embed", embed_mock),
         patch.object(ingest_service, "_mark_ready", AsyncMock()) as mark_ready,
         patch.object(ingest_service, "_mark_error", AsyncMock()) as mark_error,
     ):
