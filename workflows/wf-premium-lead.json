@@ -1,0 +1,466 @@
+{
+  "name": "WF-P — Premium lead",
+  "nodes": [
+    {
+      "id": "webhook-premium-lead",
+      "name": "Webhook - Premium Lead",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -200,
+        300
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "premium-lead",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "set-auth-context",
+      "name": "Set Auth Context",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        40,
+        300
+      ],
+      "parameters": {
+        "mode": "manual",
+        "duplicateItem": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "authHeaderName",
+              "type": "string",
+              "value": "x-lead-token"
+            },
+            {
+              "id": "a2",
+              "name": "authExpectedValue",
+              "type": "string",
+              "value": "={{ $env.LEAD_TOKEN }}"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "verify-token",
+      "name": "Verify Token",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        300
+      ],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// source: snippets/verify-token.js\n// Header-token check, shared by every webhook trigger (WF-H, WF-P, and WF-W in\n// E11). Deliberately generic: it never names a specific header or env var\n// itself (that would make it a literal-per-workflow copy, breaking the\n// source-of-truth byte-match) — each workflow's own Set node upstream supplies\n// `authHeaderName` + `authExpectedValue`, this just compares them against the\n// inbound webhook headers.\nfunction verifyToken(items) {\n  return items.map((item) => {\n    const headers = item.json.headers || {};\n    const headerName = String(item.json.authHeaderName || \"\").toLowerCase();\n    const expected = item.json.authExpectedValue;\n    const received = headers[headerName];\n    const valid = Boolean(expected) && received === expected;\n    return { json: { ...item.json, tokenValid: valid } };\n  });\n}\n\nif (typeof $input !== \"undefined\") {\n  return verifyToken($input.all());\n}\n\nmodule.exports = { verifyToken };"
+      }
+    },
+    {
+      "id": "if-token-valid",
+      "name": "IF Token Valid",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        520,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.tokenValid === true }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "respond-401",
+      "name": "Respond 401",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        760,
+        460
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"error\": \"unauthorized\" } }}",
+        "options": {
+          "responseCode": 401
+        }
+      }
+    },
+    {
+      "id": "respond-200-early",
+      "name": "Respond 200 Early",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        760,
+        180
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"status\": \"accepted\" } }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "idempotency-guard-insert",
+      "name": "Idempotency Guard Insert",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        760,
+        300
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO events (conversation_id, type, detail)\nVALUES (NULL, 'lead_notified', jsonb_build_object('lead_id', $1::text))\nON CONFLICT ((detail ->> 'lead_id')) WHERE type = 'lead_notified'\nDO NOTHING\nRETURNING id",
+        "options": {
+          "queryReplacement": "={{ [$json.body.lead_id] }}"
+        }
+      }
+    },
+    {
+      "id": "fetch-lead-context",
+      "name": "Fetch Lead Context",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1000,
+        300
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT pl.id AS lead_id, pl.name, pl.email, pl.company, pl.message, pl.source,\n       COALESCE((SELECT count(*) FROM tenants t WHERE t.owner_user_id = pl.user_id), 0) AS workspaces_used\n  FROM premium_leads pl\n WHERE pl.id = $1",
+        "options": {
+          "queryReplacement": "={{ [$('Webhook - Premium Lead').item.json.body.lead_id] }}"
+        }
+      }
+    },
+    {
+      "id": "format-lead",
+      "name": "Format Lead",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1240,
+        300
+      ],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// source: snippets/format-lead.js\n// premium_leads row -> Slack text + Gmail body + one-tap quick-reply links\n// (spec E6 Req 8). This workflow is literally how the HelpFlow demo hands Raj\n// freelance leads, so the message is written to be worth screenshotting for\n// the case study: name, company, message, buying-intent signal (workspaces\n// used), a mailto: to the lead's own address, and a wa.me link.\n//\n// wa.me deliberately points at $env.RAJ_WHATSAPP_URL, not a lead phone number\n// — premium_leads captures no phone field (schema: id/user_id/name/email/\n// company/message/source/created_at), so there's nothing lead-specific to\n// build a wa.me link from. This matches spec Req 8's literal wording\n// (\"a wa.me link ($env.RAJ_WHATSAPP_URL)\") — a one-tap jump into Raj's own\n// WhatsApp, not a deep link to the lead.\nfunction escapeHtml(s) {\n  return String(s || \"\").replace(/[&<>\"']/g, (c) => ({\n    \"&\": \"&amp;\",\n    \"<\": \"&lt;\",\n    \">\": \"&gt;\",\n    '\"': \"&quot;\",\n    \"'\": \"&#39;\",\n  }[c]));\n}\n\nfunction formatLead(lead, env) {\n  const name = lead.name || \"(no name)\";\n  const email = lead.email || \"\";\n  const company = lead.company ? lead.company : \"(no company given)\";\n  const message = lead.message || \"\";\n  const source = lead.source || \"unknown\";\n  const workspacesUsed = Number.isFinite(lead.workspaces_used) ? lead.workspaces_used : 0;\n  const mailtoLink = email\n    ? `mailto:${email}?subject=${encodeURIComponent(\"Re: your HelpFlow message\")}`\n    : \"\";\n  const waLink = env.RAJ_WHATSAPP_URL || \"\";\n\n  const intentLine =\n    workspacesUsed > 0\n      ? `Used ${workspacesUsed} trial workspace${workspacesUsed === 1 ? \"\" : \"s\"} before hitting the gate — real buying intent.`\n      : `Came in via the ${source} form (no trial workspace on file).`;\n\n  const slackText =\n    `:moneybag: *New premium lead* (${source})\\n` +\n    `*${name}*${company ? ` — ${company}` : \"\"}\\n` +\n    `${intentLine}\\n` +\n    `> ${message}\\n` +\n    (mailtoLink ? `<${mailtoLink}|Reply by email>` : \"no email\") +\n    (waLink ? `  •  <${waLink}|Open WhatsApp>` : \"\");\n\n  const emailSubject = `[HelpFlow] Premium lead: ${name}${lead.company ? ` (${lead.company})` : \"\"}`;\n  const emailBody =\n    `<p><strong>${escapeHtml(name)}</strong>${lead.company ? ` — ${escapeHtml(lead.company)}` : \"\"}</p>` +\n    `<p>${escapeHtml(intentLine)}</p>` +\n    `<p style=\"white-space:pre-wrap\">${escapeHtml(message)}</p>` +\n    `<p>` +\n    (mailtoLink ? `<a href=\"${mailtoLink}\">Reply by email</a>` : \"no email on file\") +\n    (waLink ? ` &nbsp;|&nbsp; <a href=\"${waLink}\">Open WhatsApp</a>` : \"\") +\n    `</p>`;\n\n  return { slackText, emailSubject, emailBody, mailtoLink, waLink };\n}\n\nfunction run(items, env) {\n  return items.map((item) => ({ json: { ...item.json, ...formatLead(item.json, env) } }));\n}\n\nif (typeof $input !== \"undefined\") {\n  return run($input.all(), { RAJ_WHATSAPP_URL: $env.RAJ_WHATSAPP_URL });\n}\n\nmodule.exports = { formatLead, run };"
+      }
+    },
+    {
+      "id": "slack-notify",
+      "name": "Slack Notify",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        1480,
+        180
+      ],
+      "onError": "continueRegularOutput",
+      "continueOnFail": true,
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.SLACK_CHANNEL }}"
+        },
+        "text": "={{ $json.slackText }}",
+        "otherOptions": {}
+      }
+    },
+    {
+      "id": "check-slack-notify-failure",
+      "name": "Check Slack Notify Failure",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1720,
+        180
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.error !== undefined && $json.error !== null }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "insert-workflow-error-slack",
+      "name": "Insert Workflow Error - Slack",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1960,
+        120
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO events (conversation_id, type, detail)\nVALUES (NULL, 'workflow_error', jsonb_build_object('webhook', 'premium-lead', 'node', 'Slack Notify', 'lead_id', $1::text, 'message', $2::text))",
+        "options": {
+          "queryReplacement": "={{ [$('Webhook - Premium Lead').item.json.body.lead_id, $json.error] }}"
+        }
+      }
+    },
+    {
+      "id": "gmail-notify",
+      "name": "Gmail Notify",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1480,
+        420
+      ],
+      "onError": "continueRegularOutput",
+      "continueOnFail": true,
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "sendTo": "={{ $env.RAJ_EMAIL }}",
+        "subject": "={{ $json.emailSubject }}",
+        "message": "={{ $json.emailBody }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "check-gmail-notify-failure",
+      "name": "Check Gmail Notify Failure",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1720,
+        420
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.error !== undefined && $json.error !== null }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "insert-workflow-error-gmail",
+      "name": "Insert Workflow Error - Gmail",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1960,
+        480
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO events (conversation_id, type, detail)\nVALUES (NULL, 'workflow_error', jsonb_build_object('webhook', 'premium-lead', 'node', 'Gmail Notify', 'lead_id', $1::text, 'message', $2::text))",
+        "options": {
+          "queryReplacement": "={{ [$('Webhook - Premium Lead').item.json.body.lead_id, $json.error] }}"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook - Premium Lead": {
+      "main": [
+        [
+          {
+            "node": "Set Auth Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Auth Context": {
+      "main": [
+        [
+          {
+            "node": "Verify Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Token": {
+      "main": [
+        [
+          {
+            "node": "IF Token Valid",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Token Valid": {
+      "main": [
+        [
+          {
+            "node": "Respond 200 Early",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Idempotency Guard Insert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 401",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Idempotency Guard Insert": {
+      "main": [
+        [
+          {
+            "node": "Fetch Lead Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Lead Context": {
+      "main": [
+        [
+          {
+            "node": "Format Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Lead": {
+      "main": [
+        [
+          {
+            "node": "Slack Notify",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Gmail Notify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack Notify": {
+      "main": [
+        [
+          {
+            "node": "Check Slack Notify Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Slack Notify Failure": {
+      "main": [
+        [
+          {
+            "node": "Insert Workflow Error - Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gmail Notify": {
+      "main": [
+        [
+          {
+            "node": "Check Gmail Notify Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Gmail Notify Failure": {
+      "main": [
+        [
+          {
+            "node": "Insert Workflow Error - Gmail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
