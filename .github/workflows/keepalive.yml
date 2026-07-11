@@ -1,0 +1,58 @@
+name: keepalive
+
+# Daily keepalive + Qdrant orphan cleanup + Supabase ping (spec E10 Req 1/9,
+# ARCHITECTURE §9). Free-tier Qdrant/Supabase projects can pause after a
+# stretch of inactivity, and Railway Hobby containers idle down too — this is
+# the ₹0-cost tax for running the whole stack on free tiers. GitHub Actions'
+# free scheduled runs are the cheapest cron available that isn't n8n itself
+# (n8n stays out of this: it never touches vector-store internals).
+#
+# Runs `python -m backend.scripts.cleanup_orphans`, which pings Qdrant +
+# Supabase and deletes any orphaned Qdrant points, then curls the FastAPI and
+# n8n health endpoints as a second, independent warm-up (best-effort — a curl
+# failure here logs but never fails the job; UptimeRobot is the real monitor
+# for those, this is just extra traffic).
+#
+# Required repo secrets (Settings → Secrets and variables → Actions):
+#   QDRANT_URL, QDRANT_API_KEY, SUPABASE_DB_URL   — same values as .env
+#   FASTAPI_BASE_URL                              — e.g. https://<app>.up.railway.app
+#   N8N_BASE_URL                                  — e.g. https://<n8n>.up.railway.app
+
+on:
+  schedule:
+    - cron: "17 3 * * *"  # 03:17 UTC daily — off the hour, avoids Actions' peak-minute queueing
+  workflow_dispatch: {}
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install backend deps
+        run: pip install -r requirements.txt
+
+      - name: Qdrant + Supabase keepalive and orphan cleanup
+        env:
+          QDRANT_URL: ${{ secrets.QDRANT_URL }}
+          QDRANT_API_KEY: ${{ secrets.QDRANT_API_KEY }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: python -m backend.scripts.cleanup_orphans
+
+      - name: Warm FastAPI + n8n health endpoints (best-effort)
+        if: always()
+        env:
+          FASTAPI_BASE_URL: ${{ secrets.FASTAPI_BASE_URL }}
+          N8N_BASE_URL: ${{ secrets.N8N_BASE_URL }}
+        run: |
+          set +e
+          echo "FastAPI /health:"
+          curl -fsS --max-time 10 "$FASTAPI_BASE_URL/health" || echo "  (unreachable — non-fatal, UptimeRobot owns real alerting)"
+          echo "n8n /webhook/health:"
+          curl -fsS --max-time 10 "$N8N_BASE_URL/webhook/health" || echo "  (unreachable — non-fatal, UptimeRobot owns real alerting)"
+          exit 0
