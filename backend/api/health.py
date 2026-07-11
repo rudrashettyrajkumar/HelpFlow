@@ -21,7 +21,8 @@ from fastapi.responses import JSONResponse
 
 from backend.llm.gateway import liveness
 from backend.utils import supabase_client
-from backend.utils.qdrant_client import QDRANT_TIMEOUT_S, get_qdrant
+from backend.utils.config import get_settings
+from backend.utils.qdrant_client import get_qdrant
 from backend.utils.redis_client import REDIS_TIMEOUT_S, get_redis, hf_key
 
 router = APIRouter()
@@ -32,12 +33,12 @@ _DOWN = "down"
 
 
 async def _check_qdrant() -> bool:
-    await asyncio.wait_for(get_qdrant().get_collections(), timeout=QDRANT_TIMEOUT_S)
+    await asyncio.wait_for(get_qdrant().get_collections(), timeout=get_settings().QDRANT_TIMEOUT_S)
     return True
 
 
 async def _check_supabase() -> bool:
-    await asyncio.wait_for(supabase_client.ping(), timeout=supabase_client.DB_ACQUIRE_TIMEOUT_S)
+    await asyncio.wait_for(supabase_client.ping(), timeout=get_settings().DB_ACQUIRE_TIMEOUT_S)
     return True
 
 
