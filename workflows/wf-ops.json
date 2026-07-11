@@ -1,0 +1,777 @@
+{
+  "name": "WF-O — Ops",
+  "nodes": [
+    {
+      "id": "webhook-health",
+      "name": "Webhook - Health",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -200,
+        500
+      ],
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "health",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "respond-health-ok",
+      "name": "Respond Health OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        40,
+        500
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"status\": \"ok\" } }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "schedule-hourly-sweep",
+      "name": "Schedule Hourly Sweep",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -200,
+        220
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "fetch-notified-escalations",
+      "name": "Fetch Notified Escalations",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        40,
+        140
+      ],
+      "alwaysOutputData": true,
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT e.id::text AS escalation_id, e.conversation_id, e.reason, e.notified_at,\n       t.name AS tenant_name\n  FROM escalations e\n  JOIN conversations c ON c.id = e.conversation_id\n  JOIN tenants t ON t.id = c.tenant_id\n WHERE e.status = 'notified' AND e.assigned_agent IS NULL",
+        "options": {}
+      }
+    },
+    {
+      "id": "fetch-idle-needs-human",
+      "name": "Fetch Idle Needs-Human",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        40,
+        300
+      ],
+      "alwaysOutputData": true,
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT c.id AS conversation_id, c.last_activity_at, c.customer_email,\n       t.name AS tenant_name\n  FROM conversations c\n  JOIN tenants t ON t.id = c.tenant_id\n WHERE c.status = 'needs_human'",
+        "options": {}
+      }
+    },
+    {
+      "id": "merge-sweep-candidates",
+      "name": "Merge Sweep Candidates",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        280,
+        220
+      ],
+      "parameters": {
+        "mode": "append",
+        "options": {}
+      }
+    },
+    {
+      "id": "business-hours",
+      "name": "Business Hours",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        520,
+        220
+      ],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// source: snippets/business-hours.js\n// Is-now-within-BUSINESS_HOURS check for WF-H (spec E6 Req 3). Reads only\n// `$env.BUSINESS_HOURS` + `$env.BUSINESS_TZ` — no per-tenant hours exist in the\n// schema (confirmed: grep of sql/ + backend/ for business_hours is empty), so\n// this is a single global window, not per-tenant.\n//\n// BUSINESS_HOURS format: \"HH:MM-HH:MM\" (every day) or \"DDD-DDD HH:MM-HH:MM\"\n// (day range, e.g. \"MON-FRI 09:00-18:00\"). Wraps past midnight if start > end.\n// An unparseable value fails OPEN (never silently swallows a real escalation —\n// off-hours only suppresses the on-call ping, it never drops the alert).\nfunction isWithinBusinessHours(now, businessHours, businessTz) {\n  const spec = String(businessHours || \"\").trim();\n  const match = spec.match(/^(?:([A-Za-z]{3})-([A-Za-z]{3})\\s+)?(\\d{2}):(\\d{2})-(\\d{2}):(\\d{2})$/);\n  if (!match) return true;\n\n  const [, dayFrom, dayTo, h1, m1, h2, m2] = match;\n  const tz = businessTz || \"UTC\";\n\n  const parts = new Intl.DateTimeFormat(\"en-US\", {\n    timeZone: tz,\n    weekday: \"short\",\n    hour: \"2-digit\",\n    minute: \"2-digit\",\n    hour12: false,\n  }).formatToParts(now);\n  const get = (type) => parts.find((p) => p.type === type)?.value || \"\";\n\n  const DAYS = [\"SUN\", \"MON\", \"TUE\", \"WED\", \"THU\", \"FRI\", \"SAT\"];\n  const weekday = get(\"weekday\").toUpperCase().slice(0, 3);\n  const hour = parseInt(get(\"hour\"), 10) % 24; // Intl can return \"24\" for midnight\n  const minute = parseInt(get(\"minute\"), 10);\n  const minutesNow = hour * 60 + minute;\n  const minutesStart = parseInt(h1, 10) * 60 + parseInt(m1, 10);\n  const minutesEnd = parseInt(h2, 10) * 60 + parseInt(m2, 10);\n\n  let inDayRange = true;\n  if (dayFrom && dayTo) {\n    const from = DAYS.indexOf(dayFrom.toUpperCase());\n    const to = DAYS.indexOf(dayTo.toUpperCase());\n    const cur = DAYS.indexOf(weekday);\n    if (from === -1 || to === -1 || cur === -1) return true; // fail open\n    inDayRange = from <= to ? cur >= from && cur <= to : cur >= from || cur <= to;\n  }\n\n  const inTimeRange =\n    minutesStart <= minutesEnd\n      ? minutesNow >= minutesStart && minutesNow < minutesEnd\n      : minutesNow >= minutesStart || minutesNow < minutesEnd;\n\n  return inDayRange && inTimeRange;\n}\n\nfunction run(items, env) {\n  const inBusinessHours = isWithinBusinessHours(new Date(), env.BUSINESS_HOURS, env.BUSINESS_TZ);\n  return items.map((item) => ({ json: { ...item.json, inBusinessHours } }));\n}\n\nif (typeof $input !== \"undefined\") {\n  return run($input.all(), { BUSINESS_HOURS: $env.BUSINESS_HOURS, BUSINESS_TZ: $env.BUSINESS_TZ });\n}\n\nmodule.exports = { isWithinBusinessHours, run };"
+      }
+    },
+    {
+      "id": "sla-sweep",
+      "name": "SLA Sweep",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        760,
+        220
+      ],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// source: snippets/sla-sweep.js\n// Hourly ops-sweep classifier for WF-O (spec E10 Req 1). Pure decision logic:\n// the two Postgres fetch nodes upstream supply candidates (notified-unassigned\n// escalations + needs_human conversations), the Business Hours node has already\n// stamped `inBusinessHours` on every item; this decides what gets acted on and\n// never touches the DB itself — the guarded marker INSERT / guarded UPDATE\n// downstream stay the single writers.\n//\n// Decisions:\n//  * sla_realert — escalation still status='notified' and unassigned after\n//    $env.SLA_MINUTES. Emitted on EVERY sweep while stale; the `sla_realert`\n//    events marker (006 partial unique index + ON CONFLICT DO NOTHING) is what\n//    makes the Slack re-alert fire exactly ONCE per escalation.\n//  * abandon — needs_human conversation with NO captured customer_email\n//    (nobody to follow up with), idle longer than $env.ABANDON_HOURS, and only\n//    OFF-hours (during business hours a quiet needs_human is the agents' queue,\n//    not the sweep's). WF-O is the ONLY writer of needs_human→abandoned.\n//\n// Missing/unparseable env FAILS QUIET for that decision (no realert / no\n// abandon): a state transition and a page must never fire off a misconfigured\n// threshold. Anything unclassifiable — fresh, assigned, in-hours, has-email,\n// or the empty `alwaysOutputData` placeholder item — drops out.\nfunction sweep(items, env, now) {\n  const nowMs = (now instanceof Date ? now : new Date(now)).getTime();\n  const slaMinutes = parseInt(env.SLA_MINUTES, 10);\n  const abandonHours = parseInt(env.ABANDON_HOURS, 10);\n  const actions = [];\n\n  for (const item of items) {\n    const row = item.json || item;\n\n    if (row.escalation_id && row.notified_at) {\n      if (!Number.isFinite(slaMinutes) || slaMinutes <= 0) continue;\n      const waitedMinutes = Math.floor((nowMs - new Date(row.notified_at).getTime()) / 60000);\n      if (waitedMinutes >= slaMinutes) {\n        actions.push({\n          json: {\n            action: \"sla_realert\",\n            escalation_id: row.escalation_id,\n            conversation_id: row.conversation_id,\n            tenant_name: row.tenant_name || \"(unknown tenant)\",\n            waited_minutes: waitedMinutes,\n          },\n        });\n      }\n    } else if (row.conversation_id && row.last_activity_at) {\n      if (!Number.isFinite(abandonHours) || abandonHours <= 0) continue;\n      if (row.customer_email) continue;\n      if (row.inBusinessHours !== false) continue;\n      const idleHours = Math.floor((nowMs - new Date(row.last_activity_at).getTime()) / 3600000);\n      if (idleHours >= abandonHours) {\n        actions.push({\n          json: {\n            action: \"abandon\",\n            conversation_id: row.conversation_id,\n            tenant_name: row.tenant_name || \"(unknown tenant)\",\n            idle_hours: idleHours,\n          },\n        });\n      }\n    }\n  }\n\n  return actions;\n}\n\nif (typeof $input !== \"undefined\") {\n  return sweep(\n    $input.all(),\n    { SLA_MINUTES: $env.SLA_MINUTES, ABANDON_HOURS: $env.ABANDON_HOURS },\n    new Date(),\n  );\n}\n\nmodule.exports = { sweep };"
+      }
+    },
+    {
+      "id": "if-realert",
+      "name": "IF Realert",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1000,
+        220
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.action === 'sla_realert' }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "mark-realert-once",
+      "name": "Mark Realert Once",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1240,
+        140
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO events (conversation_id, type, detail)\nVALUES ($1, 'sla_realert', jsonb_build_object('escalation_id', $2::text, 'waited_minutes', $3::int, 'tenant', $4::text))\nON CONFLICT DO NOTHING\nRETURNING conversation_id,\n          detail ->> 'escalation_id'          AS escalation_id,\n          (detail ->> 'waited_minutes')::int  AS waited_minutes,\n          detail ->> 'tenant'                 AS tenant_name",
+        "options": {
+          "queryReplacement": "={{ [$json.conversation_id, $json.escalation_id, $json.waited_minutes, $json.tenant_name] }}"
+        }
+      }
+    },
+    {
+      "id": "slack-sla-realert",
+      "name": "Slack SLA Re-Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        1480,
+        140
+      ],
+      "onError": "continueRegularOutput",
+      "continueOnFail": true,
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.SLACK_CHANNEL }}"
+        },
+        "text": "={{ `:hourglass_flowing_sand: *SLA breach — ${$json.tenant_name}*\\n` + `Escalation unclaimed for ${$json.waited_minutes} min (SLA ${$env.SLA_MINUTES} min) — one-time re-alert.\\n` + `Claim it: ${$env.CONSOLE_BASE_URL}/app/inbox/${$json.conversation_id}` }}",
+        "otherOptions": {}
+      }
+    },
+    {
+      "id": "check-realert-slack-failure",
+      "name": "Check Realert Slack Failure",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1720,
+        140
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.error !== undefined && $json.error !== null }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "insert-workflow-error-realert-slack",
+      "name": "Insert Workflow Error - Realert Slack",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1960,
+        80
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO events (conversation_id, type, detail)\nVALUES ($1, 'workflow_error', jsonb_build_object('node', 'Slack SLA Re-Alert', 'message', $2::text))",
+        "options": {
+          "queryReplacement": "={{ [$('Mark Realert Once').item.json.conversation_id, $json.error] }}"
+        }
+      }
+    },
+    {
+      "id": "guarded-abandon-update",
+      "name": "Guarded Abandon Update",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1240,
+        380
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH moved AS (\n  UPDATE conversations\n     SET status = 'abandoned'\n   WHERE id = $1 AND status = 'needs_human'\n   RETURNING id\n)\nINSERT INTO events (conversation_id, type, detail)\nSELECT id, 'abandoned', jsonb_build_object('by', 'wf-o', 'idle_hours', $2::int)\n  FROM moved\nRETURNING conversation_id",
+        "options": {
+          "queryReplacement": "={{ [$json.conversation_id, $json.idle_hours] }}"
+        }
+      }
+    },
+    {
+      "id": "schedule-daily-digest",
+      "name": "Schedule Daily Digest",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -200,
+        700
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "claim-digest-marker",
+      "name": "Claim Digest Marker",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        40,
+        700
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO events (conversation_id, type, detail)\nVALUES (NULL, 'digest_sent', jsonb_build_object('date', to_char(now(), 'YYYY-MM-DD')))\nON CONFLICT DO NOTHING\nRETURNING id",
+        "options": {}
+      }
+    },
+    {
+      "id": "fetch-digest-stats",
+      "name": "Fetch Digest Stats",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        280,
+        700
+      ],
+      "alwaysOutputData": true,
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT t.name                              AS tenant_name,\n       coalesce(f.total, 0)                AS total_conversations,\n       f.deflection_rate                   AS deflection_rate,\n       coalesce(v.conversations_24h, 0)    AS conversations_24h,\n       coalesce(o.open_escalations, 0)     AS open_escalations,\n       coalesce(g.top_gaps, '')            AS top_gaps\n  FROM tenants t\n  LEFT JOIN v_funnel f ON f.tenant_id = t.id\n  LEFT JOIN (\n    SELECT tenant_id, count(*) AS conversations_24h\n      FROM conversations\n     WHERE created_at > now() - interval '24 hours'\n     GROUP BY tenant_id\n  ) v ON v.tenant_id = t.id\n  LEFT JOIN (\n    SELECT c.tenant_id, count(*) AS open_escalations\n      FROM escalations e\n      JOIN conversations c ON c.id = e.conversation_id\n     WHERE e.status IN ('open', 'notified', 'assigned')\n     GROUP BY c.tenant_id\n  ) o ON o.tenant_id = t.id\n  LEFT JOIN (\n    SELECT tenant_id,\n           string_agg(theme || ' (' || frequency || ')', ' · ' ORDER BY frequency DESC) AS top_gaps\n      FROM (\n        SELECT tenant_id, theme, frequency,\n               row_number() OVER (PARTITION BY tenant_id ORDER BY frequency DESC) AS rn\n          FROM gap_clusters\n      ) ranked\n     WHERE rn <= 3\n     GROUP BY tenant_id\n  ) g ON g.tenant_id = t.id\n ORDER BY t.name",
+        "options": {}
+      }
+    },
+    {
+      "id": "fetch-account-stats",
+      "name": "Fetch Account Stats",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        520,
+        700
+      ],
+      "executeOnce": true,
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  (SELECT count(*) FROM users         WHERE created_at > now() - interval '24 hours') AS trial_signups_24h,\n  (SELECT count(*) FROM premium_leads WHERE created_at > now() - interval '24 hours') AS premium_leads_24h,\n  (SELECT count(*) FROM premium_leads)                                                AS premium_leads_total",
+        "options": {}
+      }
+    },
+    {
+      "id": "fetch-demo-budget",
+      "name": "Fetch Demo Budget",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        760,
+        700
+      ],
+      "executeOnce": true,
+      "onError": "continueRegularOutput",
+      "continueOnFail": true,
+      "parameters": {
+        "url": "={{ $env.UPSTASH_URL.replace(/\\/+$/, '') + '/mget/hf:demo:' + $now.toUTC().toFormat('yyyyMMdd') + ':chat/hf:demo:' + $now.toUTC().toFormat('yyyyMMdd') + ':embed' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.UPSTASH_TOKEN }}"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "format-digest",
+      "name": "Format Digest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        700
+      ],
+      "executeOnce": true,
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// source: snippets/format-digest.js\n// Daily-digest formatter for WF-O (spec E10 Req 1). Pure: turns the three\n// upstream fetches (per-tenant stats rows, the one-row account stats, the\n// Upstash demo-budget mget response) into one Slack text + one Gmail\n// subject/body. Real counts only — a stat the query couldn't produce renders\n// as \"n/a\", never invented. The Upstash call is continueOnFail upstream, so a\n// dead Redis shows the budget as \"n/a\" instead of killing the digest.\nfunction escapeHtml(s) {\n  return String(s || \"\").replace(/[&<>\"']/g, (c) => ({\n    \"&\": \"&amp;\",\n    \"<\": \"&lt;\",\n    \">\": \"&gt;\",\n    '\"': \"&quot;\",\n    \"'\": \"&#39;\",\n  }[c]));\n}\n\nfunction pct(rate) {\n  if (rate === null || rate === undefined || rate === \"\") return \"n/a\";\n  const n = Number(rate);\n  return Number.isFinite(n) ? `${Math.round(n * 100)}%` : \"n/a\";\n}\n\nfunction budgetLine(used, cap) {\n  if (used === null || used === undefined) return `n/a of ${cap ?? \"?\"}`;\n  return `${used} of ${cap ?? \"?\"}`;\n}\n\nfunction formatDigest(tenants, account, budget, env, now) {\n  const day = (now instanceof Date ? now : new Date(now || Date.now()))\n    .toISOString()\n    .slice(0, 10);\n\n  const tenantLines = tenants.length\n    ? tenants.map((t) => {\n        const head =\n          `*${t.tenant_name}* — ${t.conversations_24h ?? 0} conversation(s) in 24h · ` +\n          `deflection ${pct(t.deflection_rate)} all-time (${t.total_conversations ?? 0} total) · ` +\n          `${t.open_escalations ?? 0} open escalation(s)`;\n        return t.top_gaps ? `${head}\\n    gaps: ${t.top_gaps}` : head;\n      })\n    : [\"(no tenants yet)\"];\n\n  const accountLine =\n    `*Accounts:* ${account.trial_signups_24h ?? \"n/a\"} trial signup(s) · ` +\n    `${account.premium_leads_24h ?? \"n/a\"} premium lead(s) in 24h ` +\n    `(${account.premium_leads_total ?? \"n/a\"} all-time)`;\n\n  const budgetText =\n    `*Demo budget today (UTC):* chat ${budgetLine(budget.chatUsed, env.DEMO_CHAT_DAILY)} · ` +\n    `embed ${budgetLine(budget.embedUsed, env.DEMO_EMBED_DAILY)}`;\n\n  const slackText =\n    `:newspaper: *HelpFlow daily digest — ${day}*\\n` +\n    `${tenantLines.join(\"\\n\")}\\n` +\n    `${accountLine}\\n` +\n    `${budgetText}\\n` +\n    `Console: ${env.CONSOLE_BASE_URL || \"\"}`;\n\n  const emailSubject = `[HelpFlow] Daily digest — ${day}`;\n  const emailBody =\n    `<h3>HelpFlow daily digest — ${day}</h3>` +\n    `<ul>${tenants\n      .map(\n        (t) =>\n          `<li><strong>${escapeHtml(t.tenant_name)}</strong> — ` +\n          `${t.conversations_24h ?? 0} conversation(s) in 24h · ` +\n          `deflection ${pct(t.deflection_rate)} all-time (${t.total_conversations ?? 0} total) · ` +\n          `${t.open_escalations ?? 0} open escalation(s)` +\n          (t.top_gaps ? `<br/>gaps: ${escapeHtml(t.top_gaps)}` : \"\") +\n          `</li>`,\n      )\n      .join(\"\")}</ul>` +\n    `<p>${escapeHtml(accountLine.replace(/\\*/g, \"\"))}</p>` +\n    `<p>${escapeHtml(budgetText.replace(/\\*/g, \"\"))}</p>` +\n    (env.CONSOLE_BASE_URL\n      ? `<p><a href=\"${env.CONSOLE_BASE_URL}\">Open the console</a></p>`\n      : \"\");\n\n  return { slackText, emailSubject, emailBody };\n}\n\nif (typeof $input !== \"undefined\") {\n  const tenants = $(\"Fetch Digest Stats\")\n    .all()\n    .map((i) => i.json)\n    .filter((t) => t.tenant_name);\n  const accountItem = $(\"Fetch Account Stats\").first();\n  const account = (accountItem && accountItem.json) || {};\n  const budgetItem = $input.first();\n  const raw = (budgetItem && budgetItem.json) || {};\n  const result = Array.isArray(raw.result) ? raw.result : [null, null];\n  const budget = {\n    chatUsed: result[0] === null || result[0] === undefined ? null : parseInt(result[0], 10) || 0,\n    embedUsed: result[1] === null || result[1] === undefined ? null : parseInt(result[1], 10) || 0,\n  };\n  return [\n    {\n      json: formatDigest(tenants, account, budget, {\n        DEMO_CHAT_DAILY: $env.DEMO_CHAT_DAILY,\n        DEMO_EMBED_DAILY: $env.DEMO_EMBED_DAILY,\n        CONSOLE_BASE_URL: $env.CONSOLE_BASE_URL,\n      }, new Date()),\n    },\n  ];\n}\n\nmodule.exports = { formatDigest };"
+      }
+    },
+    {
+      "id": "slack-digest",
+      "name": "Slack Digest",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        1240,
+        620
+      ],
+      "onError": "continueRegularOutput",
+      "continueOnFail": true,
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.SLACK_CHANNEL }}"
+        },
+        "text": "={{ $json.slackText }}",
+        "otherOptions": {}
+      }
+    },
+    {
+      "id": "check-digest-slack-failure",
+      "name": "Check Digest Slack Failure",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1480,
+        620
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.error !== undefined && $json.error !== null }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "insert-workflow-error-digest-slack",
+      "name": "Insert Workflow Error - Digest Slack",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1720,
+        560
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO events (conversation_id, type, detail)\nVALUES (NULL, 'workflow_error', jsonb_build_object('node', 'Slack Digest', 'message', $1::text))",
+        "options": {
+          "queryReplacement": "={{ [$json.error] }}"
+        }
+      }
+    },
+    {
+      "id": "gmail-digest",
+      "name": "Gmail Digest",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1240,
+        780
+      ],
+      "onError": "continueRegularOutput",
+      "continueOnFail": true,
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "sendTo": "={{ $env.ONCALL_EMAIL }}",
+        "subject": "={{ $json.emailSubject }}",
+        "message": "={{ $json.emailBody }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "check-digest-gmail-failure",
+      "name": "Check Digest Gmail Failure",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1480,
+        780
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.error !== undefined && $json.error !== null }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "insert-workflow-error-digest-gmail",
+      "name": "Insert Workflow Error - Digest Gmail",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1720,
+        840
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO events (conversation_id, type, detail)\nVALUES (NULL, 'workflow_error', jsonb_build_object('node', 'Gmail Digest', 'message', $1::text))",
+        "options": {
+          "queryReplacement": "={{ [$json.error] }}"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook - Health": {
+      "main": [
+        [
+          {
+            "node": "Respond Health OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Hourly Sweep": {
+      "main": [
+        [
+          {
+            "node": "Fetch Notified Escalations",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch Idle Needs-Human",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Notified Escalations": {
+      "main": [
+        [
+          {
+            "node": "Merge Sweep Candidates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Idle Needs-Human": {
+      "main": [
+        [
+          {
+            "node": "Merge Sweep Candidates",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Sweep Candidates": {
+      "main": [
+        [
+          {
+            "node": "Business Hours",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Business Hours": {
+      "main": [
+        [
+          {
+            "node": "SLA Sweep",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SLA Sweep": {
+      "main": [
+        [
+          {
+            "node": "IF Realert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Realert": {
+      "main": [
+        [
+          {
+            "node": "Mark Realert Once",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Guarded Abandon Update",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Realert Once": {
+      "main": [
+        [
+          {
+            "node": "Slack SLA Re-Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack SLA Re-Alert": {
+      "main": [
+        [
+          {
+            "node": "Check Realert Slack Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Realert Slack Failure": {
+      "main": [
+        [
+          {
+            "node": "Insert Workflow Error - Realert Slack",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Schedule Daily Digest": {
+      "main": [
+        [
+          {
+            "node": "Claim Digest Marker",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Digest Marker": {
+      "main": [
+        [
+          {
+            "node": "Fetch Digest Stats",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Digest Stats": {
+      "main": [
+        [
+          {
+            "node": "Fetch Account Stats",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Account Stats": {
+      "main": [
+        [
+          {
+            "node": "Fetch Demo Budget",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Demo Budget": {
+      "main": [
+        [
+          {
+            "node": "Format Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Digest": {
+      "main": [
+        [
+          {
+            "node": "Slack Digest",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Gmail Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack Digest": {
+      "main": [
+        [
+          {
+            "node": "Check Digest Slack Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Digest Slack Failure": {
+      "main": [
+        [
+          {
+            "node": "Insert Workflow Error - Digest Slack",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Gmail Digest": {
+      "main": [
+        [
+          {
+            "node": "Check Digest Gmail Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Digest Gmail Failure": {
+      "main": [
+        [
+          {
+            "node": "Insert Workflow Error - Digest Gmail",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
