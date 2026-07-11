@@ -129,6 +129,15 @@ class Settings(BaseSettings):
     TRIAL_MESSAGES_DAILY: int = 40
 
     # --- Tunables (ARCHITECTURE §4/§7/§9) --------------------------------
+    # Hard ceiling on acquiring a pooled Postgres connection (invariant #7,
+    # fail-fast). 5s is right for Railway->Supabase (same-cloud, low latency);
+    # WSL2's local dev network path to Supabase needs more headroom under a
+    # concurrent-connection burst (e.g. the ingestion crawler's parallel page
+    # inserts) — override via env locally, never in prod.
+    DB_ACQUIRE_TIMEOUT_S: float = 5.0
+    # Same story as DB_ACQUIRE_TIMEOUT_S above — 2s is right for Railway->Qdrant
+    # (same-cloud); override locally for WSL2's slower network path.
+    QDRANT_TIMEOUT_S: float = 2.0
     MAX_CONCURRENT_LLM_CALLS: int = 8
     MAX_PAGES: int = 50  # crawl cap per source (ARCHITECTURE §3.1)
     CHUNK_TOKENS: int = 450

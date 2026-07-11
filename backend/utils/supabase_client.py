@@ -28,11 +28,10 @@ from backend.utils.config import get_settings
 if TYPE_CHECKING:
     import asyncpg
 
-# Hard ceiling on acquiring a pooled connection. A wedged pool must fail fast so
-# the request path degrades rather than hangs (CLAUDE.md invariant #7).
-DB_ACQUIRE_TIMEOUT_S = 5.0
 # Small pool — Railway Hobby is a single small container and the Supabase free
-# session pooler is itself capacity-limited.
+# session pooler is itself capacity-limited. The acquire timeout itself is
+# `settings.DB_ACQUIRE_TIMEOUT_S` (config.py) — a wedged pool must fail fast so
+# the request path degrades rather than hangs (CLAUDE.md invariant #7).
 POOL_MIN_SIZE = 1
 POOL_MAX_SIZE = 8
 
@@ -50,7 +49,7 @@ async def get_pool() -> asyncpg.Pool:
             dsn=settings.SUPABASE_DB_URL,
             min_size=POOL_MIN_SIZE,
             max_size=POOL_MAX_SIZE,
-            timeout=DB_ACQUIRE_TIMEOUT_S,
+            timeout=settings.DB_ACQUIRE_TIMEOUT_S,
             # Supabase's transaction/session pooler does not support server-side
             # prepared-statement caching across pooled connections; disabling the
             # cache avoids "prepared statement already exists" under pgbouncer.

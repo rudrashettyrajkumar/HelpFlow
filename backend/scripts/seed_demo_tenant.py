@@ -41,7 +41,7 @@ async def _get_or_create_tenant(name: str, website_url: str) -> str:
 async def seed(*, name: str, url: str, max_pages: int) -> tuple[str, int, int]:
     await ensure_collection()
     tenant_id = await _get_or_create_tenant(name, url)
-    _log.info("seeding demo tenant", extra={"tenant_id": tenant_id, "name": name, "url": url})
+    _log.info("seeding demo tenant", extra={"tenant_id": tenant_id, "tenant_name": name, "url": url})
 
     pages = chunks = 0
     async for event in run_ingestion(tenant_id=tenant_id, url=url, max_pages=max_pages):

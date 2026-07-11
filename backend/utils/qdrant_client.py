@@ -14,7 +14,10 @@ if TYPE_CHECKING:
     from qdrant_client import AsyncQdrantClient
 
 # Retrieval sits on the hot path; a slow/unreachable Qdrant must fail fast so the
-# pipeline can degrade rather than hang.
+# pipeline can degrade rather than hang. Default 2s is right for Railway->Qdrant
+# (same-cloud); the actual value is `settings.QDRANT_TIMEOUT_S` (config.py) so
+# local WSL dev (slower network path, and ingestion's bulk upserts aren't
+# hot-path) can override it without touching prod's default.
 QDRANT_TIMEOUT_S = 2
 
 _client: "AsyncQdrantClient | None" = None
@@ -30,6 +33,6 @@ def get_qdrant() -> "AsyncQdrantClient":
         _client = AsyncQdrantClient(
             url=settings.QDRANT_URL,
             api_key=settings.QDRANT_API_KEY,
-            timeout=QDRANT_TIMEOUT_S,
+            timeout=settings.QDRANT_TIMEOUT_S,
         )
     return _client

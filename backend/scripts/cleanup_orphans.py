@@ -35,7 +35,7 @@ import logging
 
 from backend.utils import supabase_client
 from backend.utils.config import get_settings
-from backend.utils.qdrant_client import QDRANT_TIMEOUT_S, get_qdrant
+from backend.utils.qdrant_client import get_qdrant
 
 logging.basicConfig(level=logging.INFO)
 _log = logging.getLogger("helpflow.cleanup_orphans")
@@ -45,9 +45,9 @@ _SCROLL_BATCH = 512
 
 async def keepalive() -> None:
     """Cheap reachability pings — the whole point is traffic, not the result."""
-    await asyncio.wait_for(get_qdrant().get_collections(), timeout=QDRANT_TIMEOUT_S)
+    await asyncio.wait_for(get_qdrant().get_collections(), timeout=get_settings().QDRANT_TIMEOUT_S)
     _log.info("qdrant keepalive ok")
-    await asyncio.wait_for(supabase_client.ping(), timeout=supabase_client.DB_ACQUIRE_TIMEOUT_S)
+    await asyncio.wait_for(supabase_client.ping(), timeout=get_settings().DB_ACQUIRE_TIMEOUT_S)
     _log.info("supabase keepalive ok")
 
 
