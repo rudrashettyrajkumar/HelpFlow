@@ -183,6 +183,8 @@ checkboxes for `![]()` embeds.)*
 
 ## Try it locally
 
+Quick reference — commands only, assumes accounts already exist:
+
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
@@ -198,6 +200,11 @@ SUPABASE_DB_URL=... scripts/apply-sql.sh --assert       # schema + views + RLS +
 cd widget && npm install && npm run dev      # chat widget, Vite dev server
 cd portal && npm install && npm run dev      # landing/wizard/console, Next.js dev server
 ```
+
+**First time, or want to see it working end-to-end with real sample data?**
+[`SETUP.md`](SETUP.md) is the full walkthrough — free-account signup links, a seeded
+demo tenant with real crawled content, and a step-by-step tour of the widget, wizard,
+Model Studio, and console.
 
 Full production deploy (Railway/Vercel/Cloudflare/UptimeRobot, numbered checklists):
 [`docs/runbook.md`](docs/runbook.md).
