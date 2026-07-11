@@ -64,7 +64,7 @@ async def _probe(name: str, check: Callable[[], Awaitable[bool]]) -> str:
         return _DOWN
 
 
-@router.get("/health")
+@router.api_route("/health", methods=["GET", "HEAD"])
 async def health() -> JSONResponse:
     qdrant, supabase, redis, llm = await asyncio.gather(
         _probe("qdrant", _check_qdrant),
