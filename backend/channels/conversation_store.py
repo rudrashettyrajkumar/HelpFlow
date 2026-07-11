@@ -78,14 +78,20 @@ async def load_or_create(
         return convo
 
     new_id = str(uuid.uuid4())
+    # $1 reused for both `id` (uuid) and `external_ref` (text) made asyncpg's
+    # prepared-statement planner unable to deduce a single type for the
+    # parameter ("AmbiguousParameterError: inconsistent types deduced for
+    # parameter $1, DETAIL: uuid versus text") — pass the same value twice as
+    # distinct positional params instead.
     row = await supabase_client.fetchrow(
         "INSERT INTO conversations (id, tenant_id, channel, external_ref) "
-        "VALUES ($1, $2, $3, $1) "
+        "VALUES ($1, $2, $3, $4) "
         "RETURNING id, tenant_id, channel, external_ref, status, assigned_agent, "
         "customer_email, low_conf_streak, last_activity_at, created_at, updated_at",
         new_id,
         tenant_id,
         channel,
+        new_id,
     )
     return _row(row)
 
