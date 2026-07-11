@@ -1,0 +1,121 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---------------------------------------------------------------------------
+   Semantic design tokens (DocChat v2 family look, ARCHITECTURE §8). Light is
+   the default; `main.tsx` resolves the embed.js `?theme=` param (light / dark
+   / auto) to an explicit `data-theme` attribute on <html> — the widget picks
+   ITS OWN theme rather than inheriting the host page's mode, since the iframe
+   is a separate document (host-CSS isolation, spec Req 8).
+--------------------------------------------------------------------------- */
+:root {
+  color-scheme: light;
+
+  --bg: 248 249 255;
+  --surface: 255 255 255;
+  --surface-muted: 244 245 252;
+  --border: 226 228 240;
+  --foreground: 15 23 42;
+  --foreground-muted: 100 116 139;
+
+  --brand: 99 102 241; /* indigo-500 */
+  --brand-2: 168 85 247; /* purple-500 */
+  --accent: 37 99 235; /* blue-600 */
+  --success: 16 185 129;
+  --destructive: 244 63 94;
+  --ring: 99 102 241;
+
+  --glass-bg: rgb(255 255 255 / 0.72);
+  --glass-bg-strong: rgb(255 255 255 / 0.9);
+  --glass-border: rgb(255 255 255 / 0.7);
+  --glass-shadow: 0 10px 34px -12px rgb(30 27 75 / 0.22);
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --bg: 8 11 26;
+  --surface: 17 22 43;
+  --surface-muted: 24 30 54;
+  --border: 42 50 82;
+  --foreground: 226 232 240;
+  --foreground-muted: 148 163 184;
+
+  --brand: 129 140 248;
+  --brand-2: 192 132 252;
+  --accent: 96 165 250;
+  --success: 52 211 153;
+  --destructive: 251 113 133;
+  --ring: 129 140 248;
+
+  --glass-bg: rgb(255 255 255 / 0.06);
+  --glass-bg-strong: rgb(255 255 255 / 0.1);
+  --glass-border: rgb(255 255 255 / 0.12);
+  --glass-shadow: 0 14px 40px -12px rgb(0 0 0 / 0.6);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-transparent text-foreground font-sans antialiased m-0;
+}
+
+*:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgb(var(--bg)), 0 0 0 4px rgb(var(--ring) / 0.7);
+  border-radius: 0.5rem;
+}
+
+@layer components {
+  .glass {
+    background: var(--glass-bg);
+    -webkit-backdrop-filter: blur(16px) saturate(150%);
+    backdrop-filter: blur(16px) saturate(150%);
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--glass-shadow);
+  }
+  .glass-strong {
+    background: var(--glass-bg-strong);
+    -webkit-backdrop-filter: blur(22px) saturate(160%);
+    backdrop-filter: blur(22px) saturate(160%);
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--glass-shadow);
+  }
+  .text-gradient {
+    background-image: linear-gradient(120deg, rgb(var(--brand)), rgb(var(--brand-2)), rgb(var(--accent)));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--foreground-muted) / 0.35) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background-color: rgb(var(--foreground-muted) / 0.35);
+  border-radius: 9999px;
+}

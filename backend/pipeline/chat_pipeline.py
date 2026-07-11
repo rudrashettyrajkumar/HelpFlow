@@ -387,8 +387,19 @@ async def run_chat_stream(
 ) -> AsyncIterator[str]:
     """`POST /chat/stream` — the frozen SSE contract: token/seq, sources, handoff,
     done, human_turn, error (spec E3 Req 1/11), plus the additive `notice` event
-    (spec E4 Req 8)."""
+    (spec E4 Req 8).
+
+    DESIGN CHOICE (flagged, spec E7): `done`'s payload widens from `{}` to
+    `{conversation_id}` — additive only, no existing key changes. Needed
+    because this is otherwise the ONLY place a brand-new web conversation's
+    server-minted id could reach the widget: `/chat/stream`'s SSE frames never
+    carried it, and the widget must persist it (reload continuity) and hand it
+    to `/chat/subscribe` for live human replies (spec Req 6). `/chat`
+    (`run_chat_once`, n8n/WhatsApp's sibling) already returns `conversation_id`
+    in its JSON body and is unaffected.
+    """
     ctx = await prepare_turn(tenant=tenant, conversation=conversation, message=message, cfg=cfg)
+    conversation_id = str(ctx.conversation["id"])
     seq = 0
     async for event in _run_turn(ctx, tenant, message, background_tasks, cfg):
         kind = event["type"]
@@ -411,7 +422,7 @@ async def run_chat_stream(
         elif kind == "error":
             yield format_event("error", {"detail": event["detail"]})
         elif kind == "done":
-            yield format_event("done", {})
+            yield format_event("done", {"conversation_id": conversation_id})
 
 
 async def run_chat_once(

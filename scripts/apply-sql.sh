@@ -25,6 +25,7 @@ run 001_schema.sql
 run 002_views_rls.sql
 run 003_users_trials.sql
 run 004_events_idempotency.sql
+run 005_gap_clusters.sql
 
 if [[ "${1:-}" == "--assert" ]]; then
   echo "== running assertions =="

@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Acme Co — demo host page (HelpFlow widget)</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: 'Segoe UI', system-ui, sans-serif;
+      }
+      body {
+        margin: 0;
+        min-height: 100dvh;
+        background: linear-gradient(160deg, #f5f3ff, #eef2ff 60%, #eff6ff);
+        color: #0f172a;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 20px 32px;
+      }
+      .logo {
+        font-weight: 800;
+        font-size: 20px;
+      }
+      .hero {
+        max-width: 640px;
+        margin: 10vh auto 0;
+        padding: 0 24px;
+        text-align: center;
+      }
+      .hero h1 {
+        font-size: clamp(28px, 5vw, 44px);
+        line-height: 1.15;
+      }
+      .hero p {
+        color: #475569;
+        font-size: 18px;
+      }
+      .controls {
+        display: flex;
+        gap: 8px;
+        justify-content: center;
+        margin-top: 24px;
+      }
+      .controls a {
+        border: 1px solid #cbd5e1;
+        border-radius: 999px;
+        padding: 8px 16px;
+        font-size: 13px;
+        text-decoration: none;
+        color: #334155;
+        background: white;
+      }
+      footer {
+        position: fixed;
+        bottom: 12px;
+        left: 20px;
+        font-size: 12px;
+        color: #94a3b8;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="logo">Acme&nbsp;Co</div>
+      <div style="font-size: 13px; color: #64748b">This is a fake business — the chat bubble bottom-right is HelpFlow.</div>
+    </header>
+
+    <main class="hero">
+      <h1>A throwaway host page for the HelpFlow demo</h1>
+      <p>
+        Nothing above this line is HelpFlow — it's a placeholder "client site" so the
+        widget can be tested exactly as a real visitor would see it: the chat bubble is
+        injected by one script tag, isolated from this page's own CSS.
+      </p>
+      <div class="controls">
+        <a href="?">auto theme</a>
+        <a href="?theme=light">light</a>
+        <a href="?theme=dark">dark</a>
+      </div>
+    </main>
+
+    <footer>widget/public/demo.html — pass ?key=&lt;widget_key&gt; to point at a real tenant</footer>
+
+    <script>
+      // Forward this page's own ?key=/?theme= (so a Loom recording or a
+      // manual test can target a live seeded tenant) onto the widget's
+      // script tag without hardcoding a real widget key here.
+      (function () {
+        var params = new URLSearchParams(window.location.search);
+        var key = params.get('key') || 'REPLACE_WITH_A_REAL_WIDGET_KEY';
+        var theme = params.get('theme') || 'auto';
+        var script = document.createElement('script');
+        script.src = './embed.js';
+        script.setAttribute('data-key', key);
+        script.setAttribute('data-theme', theme);
+        document.body.appendChild(script);
+      })();
+    </script>
+  </body>
+</html>

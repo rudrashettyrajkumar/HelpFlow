@@ -104,6 +104,36 @@ async def guarded_transition(
     return tag.endswith(" 1")
 
 
+async def set_assigned_agent(conversation_id: str, agent: str | None) -> None:
+    """Not a stage transition (no guard needed) — console's claim/handback
+    (spec E9) set/clear the display name shown in the widget's agent
+    messages; the CONVERSATION status guard is the authoritative gate for
+    those actions, this just tags along."""
+    await supabase_client.execute(
+        "UPDATE conversations SET assigned_agent = $2 WHERE id = $1",
+        conversation_id,
+        agent,
+    )
+
+
+async def guarded_escalation_transition(
+    conversation_id: str, *, expected_status: str, new_status: str
+) -> bool:
+    """Same guarded-UPDATE pattern as `guarded_transition`, on the OPEN
+    escalation row for this conversation (helpflow-schema: "same rule on
+    escalations.status"). Best-effort bookkeeping — callers don't fail the
+    conversation-level action if this returns False (e.g. WF-H hasn't
+    notified yet, so there's no 'notified' row to claim)."""
+    tag = await supabase_client.execute(
+        "UPDATE escalations SET status = $3 "
+        "WHERE conversation_id = $1 AND status = $2",
+        conversation_id,
+        expected_status,
+        new_status,
+    )
+    return tag.endswith(" 1")
+
+
 async def update_low_conf_streak(conversation_id: str, streak: int) -> None:
     """Not a stage transition (no guard needed) — a plain counter on the row the
     caller already loaded this turn; only the answer engine ever writes it."""
@@ -165,6 +195,26 @@ async def insert_escalation(conversation_id: str, reason: str) -> str:
         reason,
     )
     return str(row["id"])
+
+
+async def list_all_messages(conversation_id: str) -> list[dict[str, Any]]:
+    """The FULL transcript, oldest-first — the console's `GET
+    /conversations/{id}/messages` (spec E9 Req 2). Distinct from
+    `recent_history` (LLM-context-shaped `{role, content}`, capped) and
+    `list_messages_since` (agent-only, for the widget's `/chat/subscribe`)."""
+    import json
+
+    rows = await supabase_client.fetch(
+        "SELECT id, role, body, citations, confidence, created_at FROM messages "
+        "WHERE conversation_id = $1 ORDER BY created_at ASC",
+        conversation_id,
+    )
+    messages = [_row(r) for r in rows]
+    for message in messages:
+        citations = message.get("citations")
+        if isinstance(citations, str):
+            message["citations"] = json.loads(citations)
+    return messages
 
 
 async def recent_history(conversation_id: str, *, limit: int = 6) -> list[dict[str, Any]]:
